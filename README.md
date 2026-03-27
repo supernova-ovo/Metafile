@@ -1,73 +1,47 @@
-# React + TypeScript + Vite
+# MetaFile 🌟
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+MetaFile 是一个基于 React + TypeScript + Vite 构建的现代化文件属性管理系统原型。它采用了类似 Linear 或 Notion 的专业 SaaS 风格设计，提供了流畅的用户体验和高效的维度/标签管理能力。
 
-Currently, two official plugins are available:
+## ✨ 核心特性
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **🎨 专业级 UI/UX 设计**：双面板布局，提供充足的视觉呼吸感，搭配平滑的微交互动画。
+- **🏷️ 强大的属性管理**：支持自定义维度（如：项目、部门、状态）及标签的管理（新增、重命名、合并、删除）。
+- **💾 本地数据持久化**：所有文件元数据、标签维度排序等状态均通过 `LocalStorage` 自动同步保存。
+- **📊 实时统计**：直观展示各个标签下关联的文件数量及统计信息。
+- **⚡ 极速构建**：基于 Vite 驱动，使用 React 19 和 Tailwind CSS 4 提供现代化的前端开发体验。
 
-## React Compiler
+## 🛠️ 技术栈
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- [React 19](https://react.dev/)
+- [TypeScript](https://www.typescriptlang.org/)
+- [Vite](https://vitejs.dev/)
+- [Tailwind CSS 4](https://tailwindcss.com/)
+- [Lucide React](https://lucide.dev/) (图标)
 
-## Expanding the ESLint configuration
+## 🚀 快速开始
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 安装依赖
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### 启动开发服务器
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm run dev
 ```
+
+### 构建生产版本
+
+```bash
+npm run build
+```
+
+## 📂 项目结构
+
+- `src/components/` - 包含 Explorer（文件浏览）、Inspector（检查器）、Management（属性管理面板）、Sidebar 等核心 UI 组件。
+- `src/lib/` - 数据类型定义（types）与工具函数。
+
+---
+*本项目作为一个前端原型，展示了现代 Web 应用中复杂状态交互与极简设计的结合。*

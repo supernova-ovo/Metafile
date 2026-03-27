@@ -1,5 +1,5 @@
 import { useState, Fragment } from 'react';
-import { X, Plus, Info, Network, Hash } from 'lucide-react';
+import { X, Plus, Network, Hash, FileText } from 'lucide-react';
 import type { FileItem } from '../lib/types';
 import { availableDimensions } from '../lib/mock-data';
 import { findPathsForFile } from '../lib/tree';
@@ -9,16 +9,20 @@ interface InspectorProps {
   allFiles: FileItem[];
   dimensionOrder: string[];
   onUpdateAttributes: (id: string, newAttrs: Record<string, string[]>) => void;
+  onClose: () => void;
 }
 
-export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttributes }: InspectorProps) {
+export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttributes, onClose }: InspectorProps) {
   const [newTagInput, setNewTagInput] = useState<{ dim: string; val: string }>({ dim: '', val: '' });
 
   if (!selectedFile) {
     return (
       <div className="w-80 border-l border-border bg-[#FBFBFA] p-6 flex flex-col items-center justify-center text-text-secondary h-full text-sm">
-        <Info className="w-10 h-10 mb-4 text-gray-300" />
-        <p>选中一个文件查看详情</p>
+        <div className="w-20 h-20 bg-gray-50 rounded-full flex justify-center items-center mb-5 border border-gray-100 shadow-[inset_0_2px_10px_rgba(0,0,0,0.02)]">
+          <FileText className="w-8 h-8 text-gray-300" />
+        </div>
+        <h3 className="text-gray-600 font-semibold mb-1 text-base tracking-tight">属性详情</h3>
+        <p className="text-gray-400 text-xs text-center leading-relaxed mt-1">选中一个文件查看属性</p>
       </div>
     );
   }
@@ -64,7 +68,16 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
   return (
     <div className="w-80 border-l border-border bg-[#FBFBFA] flex flex-col h-full overflow-y-auto text-sm">
       <div className="p-6 border-b border-border bg-white">
-        <h2 className="font-semibold text-base mb-1 truncate" title={selectedFile.name}>{selectedFile.name}</h2>
+        <div className="flex justify-between items-start mb-1 gap-2">
+          <h2 className="font-semibold text-base truncate flex-1 leading-tight" title={selectedFile.name}>{selectedFile.name}</h2>
+          <button 
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-800 hover:bg-gray-100 p-1.5 -mr-1.5 -mt-1 rounded-md transition-colors"
+            title="关闭属性面板"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
         <div className="text-xs text-text-secondary flex gap-2">
           <span>{selectedFile.type.toUpperCase()}</span>
           <span>•</span>

@@ -15,3 +15,8 @@ export interface VirtualFolder {
   subFolders: Record<string, VirtualFolder>;
   files: FileItem[];
 }
+
+export interface ActiveFilter {
+  dimension: string;
+  value: string;
+}

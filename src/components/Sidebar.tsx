@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GripVertical, FolderTree, Building, Target, FileType, RotateCcw } from 'lucide-react';
+import { GripVertical, FolderTree, Building, Target, FileType, RotateCcw, Settings, ChevronDown } from 'lucide-react';
 import { availableDimensions } from '../lib/mock-data';
 import { cn } from '../lib/utils';
 
@@ -7,11 +7,13 @@ interface SidebarProps {
   dimensionOrder: string[];
   setDimensionOrder: (dimensions: string[]) => void;
   onReset: () => void;
+  onOpenManagement?: () => void;
 }
 
-export function Sidebar({ dimensionOrder, setDimensionOrder, onReset }: SidebarProps) {
+export function Sidebar({ dimensionOrder, setDimensionOrder, onReset, onOpenManagement }: SidebarProps) {
   const [draggedItem, setDraggedItem] = useState<string | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+  const [isLibraryExpanded, setIsLibraryExpanded] = useState(true);
 
   const unusedDimensions = availableDimensions.filter(d => !dimensionOrder.includes(d));
 
@@ -188,39 +190,57 @@ export function Sidebar({ dimensionOrder, setDimensionOrder, onReset }: SidebarP
           </div>
         </div>
 
-        <div>
-          <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">可用维度库</h3>
-          <p className="text-[10px] text-gray-400 mb-3 leading-snug">将底部的维度属性拽入上方的编排区，自动形成嵌套的目录层级。</p>
-          <div 
-            className={cn(
-              "space-y-2 min-h-[80px] p-3 rounded-xl border-2 border-dashed transition-all duration-300",
-              draggedItem && dimensionOrder.includes(draggedItem) ? "bg-red-50/50 border-red-200" : "border-transparent bg-transparent"
-            )}
-            onDragOver={handleDragOver}
-            onDrop={(e) => handleDrop(e, 'unused', true)}
+        <div className="flex-1 flex flex-col min-h-0">
+          <button 
+            onClick={() => setIsLibraryExpanded(!isLibraryExpanded)}
+            className="flex items-center justify-between w-full text-left focus:outline-none mb-2 group shrink-0"
           >
-            {unusedDimensions.map(dim => (
-              <div 
-                key={dim}
-                draggable
-                onDragStart={(e) => handleDragStart(e, dim)}
-                onDragEnd={handleDragEnd}
-                className={cn(
-                  "flex items-center gap-2 px-3 py-2 bg-[#F5F5F4] border border-transparent rounded-lg cursor-grab active:cursor-grabbing hover:opacity-100 transition-all duration-200",
-                  draggedItem === dim ? "opacity-30 scale-95" : "opacity-80 hover:bg-white hover:border-gray-300 hover:shadow-sm"
-                )}
-              >
-                <GripVertical className="w-4 h-4 text-gray-400" />
-                <span>{dim}</span>
-              </div>
-            ))}
-            {unusedDimensions.length === 0 && (
-              <div className="text-center text-xs text-gray-400 py-2">已开启所有维度</div>
-            )}
+            <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider group-hover:text-indigo-600 transition-colors">可用维度库</h3>
+            <ChevronDown className={cn("w-4 h-4 text-gray-400 transition-transform duration-300", !isLibraryExpanded && "-rotate-90")} />
+          </button>
+          
+          <div className={cn("transition-all duration-300 ease-in-out overflow-hidden flex flex-col min-h-0", isLibraryExpanded ? "flex-1 opacity-100" : "flex-none h-0 opacity-0")}>
+            <p className="text-[10px] text-gray-400 mb-3 leading-snug shrink-0">将底部的维度属性拽入上方的编排区，自动形成嵌套的目录层级。</p>
+            <div 
+              className={cn(
+                "space-y-2 min-h-[80px] p-3 rounded-xl border-2 border-dashed transition-all duration-300 overflow-y-auto mb-2",
+                draggedItem && dimensionOrder.includes(draggedItem) ? "bg-red-50/50 border-red-200" : "border-transparent bg-transparent"
+              )}
+              onDragOver={handleDragOver}
+              onDrop={(e) => handleDrop(e, 'unused', true)}
+            >
+              {unusedDimensions.map(dim => (
+                <div 
+                  key={dim}
+                  draggable
+                  onDragStart={(e) => handleDragStart(e, dim)}
+                  onDragEnd={handleDragEnd}
+                  className={cn(
+                    "flex items-center gap-2 px-3 py-2 bg-[#F5F5F4] border border-transparent rounded-lg cursor-grab active:cursor-grabbing hover:opacity-100 transition-all duration-200",
+                    draggedItem === dim ? "opacity-30 scale-95" : "opacity-80 hover:bg-white hover:border-gray-300 hover:shadow-sm"
+                  )}
+                >
+                  <GripVertical className="w-4 h-4 text-gray-400" />
+                  <span>{dim}</span>
+                </div>
+              ))}
+              {unusedDimensions.length === 0 && (
+                <div className="text-center text-xs text-gray-400 py-2">已开启所有维度</div>
+              )}
+            </div>
           </div>
         </div>
 
-        <div className="mt-8 pt-4 border-t border-border">
+        <div className="mt-8 pt-4 border-t border-border space-y-2">
+          {onOpenManagement && (
+            <button 
+              onClick={onOpenManagement}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700 rounded-md transition-colors text-sm font-medium border border-transparent hover:border-indigo-100"
+            >
+              <Settings className="w-4 h-4" />
+              系统设置/属性管理
+            </button>
+          )}
           <button 
             onClick={onReset}
             className="w-full flex items-center justify-center gap-2 px-3 py-2 text-red-500 hover:bg-red-50 hover:text-red-700 rounded-md transition-colors text-sm font-medium border border-transparent hover:border-red-100"

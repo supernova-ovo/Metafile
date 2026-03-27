@@ -3,10 +3,11 @@ import { Sidebar } from './components/Sidebar';
 import { Explorer } from './components/Explorer';
 import { Inspector } from './components/Inspector';
 import { UploadModal } from './components/UploadModal';
+import { Management } from './components/Management';
 import { UploadCloud } from 'lucide-react';
 import { mockFiles } from './lib/mock-data';
 import { buildTree } from './lib/tree';
-import type { FileItem } from './lib/types';
+import type { FileItem, ActiveFilter } from './lib/types';
 
 function App() {
   const [files, setFiles] = useState<FileItem[]>(() => {
@@ -47,6 +48,15 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [dragCounter, setDragCounter] = useState(0);
   const [uploadModalFiles, setUploadModalFiles] = useState<FileItem[]>([]);
+  
+  // View mode
+  const [viewMode, setViewMode] = useState<'explorer' | 'management'>('explorer');
+  
+  
+  // Search and Filter states
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
+  const [quickFilter, setQuickFilter] = useState("all");
 
   // Drag and drop handlers
   const handleDragEnter = (e: React.DragEvent) => {
@@ -106,7 +116,13 @@ function App() {
   // Validate current path when dimensions change
   useEffect(() => {
     setCurrentPath([]); 
+    setSelectedFileId(null);
   }, [dimensionOrder]);
+
+  // Clear selected file when global search/filter states change
+  useEffect(() => {
+    setSelectedFileId(null);
+  }, [searchQuery, activeFilters, quickFilter]);
 
   // Sync to LocalStorage
   useEffect(() => {
@@ -172,6 +188,7 @@ function App() {
     } else {
       setCurrentPath(currentPath.slice(0, index + 1));
     }
+    setSelectedFileId(null);
   };
 
   const handleEnterFolder = (folderName: string) => {
@@ -211,26 +228,44 @@ function App() {
         />
       )}
 
-      <Sidebar 
-        dimensionOrder={dimensionOrder} 
-        setDimensionOrder={setDimensionOrder} 
-        onReset={handleResetSystem}
-      />
-      <Explorer 
-        currentFolder={currentFolder} 
-        currentPath={currentPath}
-        dimensionOrder={dimensionOrder}
-        navigatePath={handleNavigatePath}
-        enterFolder={handleEnterFolder}
-        selectedFileId={selectedFileId}
-        onSelectFile={setSelectedFileId}
-      />
-      <Inspector 
-        selectedFile={selectedFile}
-        allFiles={files}
-        dimensionOrder={dimensionOrder}
-        onUpdateAttributes={handleUpdateAttributes}
-      />
+      {viewMode === 'explorer' ? (
+        <>
+          <Sidebar 
+            dimensionOrder={dimensionOrder} 
+            setDimensionOrder={setDimensionOrder} 
+            onReset={handleResetSystem}
+            onOpenManagement={() => setViewMode('management')}
+          />
+          <Explorer 
+            currentFolder={currentFolder} 
+            currentPath={currentPath}
+            dimensionOrder={dimensionOrder}
+            navigatePath={handleNavigatePath}
+            enterFolder={handleEnterFolder}
+            selectedFileId={selectedFileId}
+            onSelectFile={setSelectedFileId}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+            activeFilters={activeFilters}
+            setActiveFilters={setActiveFilters}
+            quickFilter={quickFilter}
+            setQuickFilter={setQuickFilter}
+          />
+          <Inspector 
+            selectedFile={selectedFile}
+            allFiles={files}
+            dimensionOrder={dimensionOrder}
+            onUpdateAttributes={handleUpdateAttributes}
+            onClose={() => setSelectedFileId(null)}
+          />
+        </>
+      ) : (
+        <Management 
+          files={files}
+          setFiles={setFiles}
+          onClose={() => setViewMode('explorer')}
+        />
+      )}
     </div>
   );
 }
