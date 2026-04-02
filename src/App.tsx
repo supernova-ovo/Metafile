@@ -10,21 +10,31 @@ import { buildTree } from './lib/tree';
 import type { FileItem, ActiveFilter } from './lib/types';
 
 function App() {
+  const processFiles = (rawFiles: FileItem[]) => {
+    return rawFiles.map(f => ({
+      ...f,
+      attributes: {
+        ...f.attributes,
+        '文件类型': [f.type.toUpperCase()]
+      }
+    }));
+  };
+
   const [files, setFiles] = useState<FileItem[]>(() => {
     try {
       const saved = localStorage.getItem('metafile_files');
-      return saved ? JSON.parse(saved) : mockFiles;
+      return saved ? processFiles(JSON.parse(saved)) : processFiles(mockFiles);
     } catch {
-      return mockFiles;
+      return processFiles(mockFiles);
     }
   });
   
   const [dimensionOrder, setDimensionOrder] = useState<string[]>(() => {
     try {
       const saved = localStorage.getItem('metafile_dimensions');
-      return saved ? JSON.parse(saved) : ['部门', '密级'];
+      return saved ? JSON.parse(saved) : ['项目'];
     } catch {
-      return ['部门', '密级'];
+      return ['项目'];
     }
   });
   
@@ -97,17 +107,23 @@ function App() {
       const baseAttributes: Record<string, string[]> = {};
       currentPath.forEach((segment, idx) => {
         const dim = dimensionOrder[idx];
-        if (dim) baseAttributes[dim] = [segment];
+        if (dim && dim !== '文件类型') baseAttributes[dim] = [segment];
       });
 
-      const newFileItems: FileItem[] = droppedFiles.map((f, i) => ({
-        id: `upload-${Date.now()}-${i}`,
-        name: f.name,
-        type: f.name.split('.').pop() || 'unknown',
-        size: f.size,
-        updatedAt: new Date(f.lastModified).toISOString(),
-        attributes: JSON.parse(JSON.stringify(baseAttributes))
-      }));
+      const newFileItems: FileItem[] = droppedFiles.map((f, i) => {
+        const fileExt = f.name.split('.').pop() || 'unknown';
+        return {
+          id: `upload-${Date.now()}-${i}`,
+          name: f.name,
+          type: fileExt,
+          size: f.size,
+          updatedAt: new Date(f.lastModified).toISOString(),
+          attributes: {
+            ...JSON.parse(JSON.stringify(baseAttributes)),
+            '文件类型': [fileExt.toUpperCase()]
+          }
+        };
+      });
 
       setUploadModalFiles(newFileItems);
     }
@@ -151,8 +167,8 @@ function App() {
       localStorage.removeItem('metafile_dimensions');
       localStorage.removeItem('metafile_path');
       localStorage.removeItem('metafile_selectedFile');
-      setFiles(mockFiles);
-      setDimensionOrder(['部门', '密级']);
+      setFiles(processFiles(mockFiles));
+      setDimensionOrder(['项目']);
       setCurrentPath([]);
       setSelectedFileId(null);
     }
@@ -179,7 +195,18 @@ function App() {
   }
 
   const handleUpdateAttributes = (fileId: string, newAttrs: Record<string, string[]>) => {
-    setFiles(prev => prev.map(f => f.id === fileId ? { ...f, attributes: newAttrs } : f));
+    setFiles(prev => prev.map(f => {
+      if (f.id === fileId) {
+        return {
+          ...f,
+          attributes: {
+            ...newAttrs,
+            '文件类型': [f.type.toUpperCase()] // Ensure it cannot be overwritten
+          }
+        };
+      }
+      return f;
+    }));
   };
 
   const handleNavigatePath = (index: number) => {

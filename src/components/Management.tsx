@@ -196,7 +196,9 @@ export function Management({ files, setFiles, onClose }: ManagementProps) {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {tagStats.map(stat => (
+                    {tagStats.map(stat => {
+                      const isComputed = selectedDimension === '文件类型';
+                      return (
                       <tr key={stat.name} className="hover:bg-gray-50/50 transition-colors group">
                         <td className="px-6 py-4">
                           <span 
@@ -217,32 +219,36 @@ export function Management({ files, setFiles, onClose }: ManagementProps) {
                           </span>
                         </td>
                         <td className="px-6 py-4 text-right">
-                          <div className="flex items-center justify-end gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
-                            <button 
-                              onClick={() => handleRename(stat.name)}
-                              className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors tooltip"
-                              title="重命名"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => handleMerge(stat.name)}
-                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                              title="合并到..."
-                            >
-                              <Merge className="w-4 h-4" />
-                            </button>
-                            <button 
-                              onClick={() => handleDelete(stat.name)}
-                              className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition-colors ml-2"
-                              title="彻底删除"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </div>
+                          {isComputed ? (
+                            <span className="text-gray-400 text-xs italic px-2">系统计算属性不可改</span>
+                          ) : (
+                            <div className="flex items-center justify-end gap-2 opacity-60 group-hover:opacity-100 transition-opacity">
+                              <button 
+                                onClick={() => handleRename(stat.name)}
+                                className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors tooltip"
+                                title="重命名"
+                              >
+                                <Edit2 className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => handleMerge(stat.name)}
+                                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                                title="合并到..."
+                              >
+                                <Merge className="w-4 h-4" />
+                              </button>
+                              <button 
+                                onClick={() => handleDelete(stat.name)}
+                                className="p-1.5 text-red-500 hover:bg-red-50 rounded-md transition-colors ml-2"
+                                title="彻底删除"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
-                    ))}
+                    )})}
                   </tbody>
                 </table>
               </div>

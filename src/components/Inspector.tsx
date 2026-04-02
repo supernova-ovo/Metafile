@@ -1,8 +1,49 @@
-import { useState, Fragment } from 'react';
-import { X, Plus, Network, Hash, FileText } from 'lucide-react';
+import { useState, useRef, useEffect, Fragment } from 'react';
+import { X, Plus, Network, Tag, Calendar, Building, Briefcase, FileType, CheckCircle2, FileText, FileSpreadsheet, Image, Presentation, File as FileIcon } from 'lucide-react';
 import type { FileItem } from '../lib/types';
 import { availableDimensions } from '../lib/mock-data';
 import { findPathsForFile } from '../lib/tree';
+
+// Linear style precise tag coloring
+const getTagStyle = (tagName: string) => {
+  let hash = 0;
+  for (let i = 0; i < tagName.length; i++) hash = tagName.charCodeAt(i) + ((hash << 5) - hash);
+  const hues = [
+    { bg: '#fee2e2', text: '#991b1b' }, // red
+    { bg: '#ffedd5', text: '#9a3412' }, // orange
+    { bg: '#fef3c7', text: '#92400e' }, // yellow
+    { bg: '#dcfce7', text: '#166534' }, // green
+    { bg: '#dbeafe', text: '#1e40af' }, // blue
+    { bg: '#ece9fe', text: '#5b21b6' }, // violet
+    { bg: '#fce7f3', text: '#9d174d' }, // pink
+    { bg: '#f3f4f6', text: '#374151' }, // gray
+  ];
+  return hues[Math.abs(hash) % hues.length];
+};
+
+const getDimIcon = (dim: string) => {
+  switch (dim) {
+    case '部门': return <Building className="w-3.5 h-3.5" />;
+    case '年份': return <Calendar className="w-3.5 h-3.5" />;
+    case '项目': return <Briefcase className="w-3.5 h-3.5" />;
+    case '档案分类':
+    case '档案类别': return <FileType className="w-3.5 h-3.5" />;
+    case '状态': return <CheckCircle2 className="w-3.5 h-3.5" />;
+    default: return <Tag className="w-3.5 h-3.5" />;
+  }
+};
+
+const getFileIcon = (type: string) => {
+    switch (type.toLowerCase()) {
+      case 'pdf': return <FileText className="w-5 h-5 text-red-500" />;
+      case 'xlsx': return <FileSpreadsheet className="w-5 h-5 text-green-600" />;
+      case 'docx': return <FileText className="w-5 h-5 text-blue-600" />;
+      case 'pptx': return <Presentation className="w-5 h-5 text-orange-500" />;
+      case 'fig': return <Image className="w-5 h-5 text-purple-500" />;
+      case 'md': return <FileText className="w-5 h-5 text-gray-600" />;
+      default: return <FileIcon className="w-5 h-5 text-gray-400" />;
+    }
+};
 
 interface InspectorProps {
   selectedFile: FileItem | undefined;
@@ -14,15 +55,31 @@ interface InspectorProps {
 
 export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttributes, onClose }: InspectorProps) {
   const [newTagInput, setNewTagInput] = useState<{ dim: string; val: string }>({ dim: '', val: '' });
+  const [showAddDimMenu, setShowAddDimMenu] = useState(false);
+  const [forceVisibleDims, setForceVisibleDims] = useState<Set<string>>(new Set());
+  
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (newTagInput.dim && inputRef.current) {
+      inputRef.current.focus();
+    }
+  }, [newTagInput.dim]);
+
+  useEffect(() => {
+    setForceVisibleDims(new Set());
+    setNewTagInput({ dim: '', val: '' });
+    setShowAddDimMenu(false);
+  }, [selectedFile?.id]);
 
   if (!selectedFile) {
     return (
-      <div className="w-80 border-l border-border bg-[#FBFBFA] p-6 flex flex-col items-center justify-center text-text-secondary h-full text-sm">
-        <div className="w-20 h-20 bg-gray-50 rounded-full flex justify-center items-center mb-5 border border-gray-100 shadow-[inset_0_2px_10px_rgba(0,0,0,0.02)]">
-          <FileText className="w-8 h-8 text-gray-300" />
+      <div className="w-80 border-l border-border bg-[#FBFBFA]/80 p-6 flex flex-col items-center justify-center text-text-secondary h-full text-sm">
+        <div className="w-16 h-16 bg-white rounded-full flex justify-center items-center mb-5 border border-gray-100 shadow-sm">
+          <FileText className="w-6 h-6 text-gray-300" />
         </div>
-        <h3 className="text-gray-600 font-semibold mb-1 text-base tracking-tight">属性详情</h3>
-        <p className="text-gray-400 text-xs text-center leading-relaxed mt-1">选中一个文件查看属性</p>
+        <h3 className="text-gray-900 font-semibold mb-1 text-sm tracking-tight">选中一个文件查看属性</h3>
+        <p className="text-gray-400 text-xs text-center leading-relaxed mt-1">支持多维度属性管理</p>
       </div>
     );
   }
@@ -34,6 +91,10 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
       if (updatedAttrs[dim].length === 0) {
         delete updatedAttrs[dim];
       }
+    }
+    // If we removed the last tag, keep the dimension visible temporarily
+    if (!updatedAttrs[dim] || updatedAttrs[dim].length === 0) {
+      setForceVisibleDims(prev => new Set(prev).add(dim));
     }
     onUpdateAttributes(selectedFile.id, updatedAttrs);
   };
@@ -63,140 +124,200 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
     return Array.from(tags);
   };
 
+  const activeDimensions = availableDimensions.filter(dim => {
+    const hasValues = selectedFile.attributes[dim] && selectedFile.attributes[dim].length > 0;
+    return hasValues || forceVisibleDims.has(dim);
+  });
+
+  const emptyDimensions = availableDimensions.filter(dim => !activeDimensions.includes(dim));
+
   const virtualPaths = findPathsForFile(allFiles, dimensionOrder, selectedFile.id);
 
   return (
-    <div className="w-80 border-l border-border bg-[#FBFBFA] flex flex-col h-full overflow-y-auto text-sm">
-      <div className="p-6 border-b border-border bg-white">
-        <div className="flex justify-between items-start mb-1 gap-2">
-          <h2 className="font-semibold text-base truncate flex-1 leading-tight" title={selectedFile.name}>{selectedFile.name}</h2>
-          <button 
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-800 hover:bg-gray-100 p-1.5 -mr-1.5 -mt-1 rounded-md transition-colors"
-            title="关闭属性面板"
-          >
-            <X className="w-4 h-4" />
-          </button>
+    <div className="w-[340px] border-l border-border bg-[#FBFBFA]/50 flex flex-col h-full text-sm">
+      {/* Compact Header */}
+      <div className="px-5 py-4 border-b border-border bg-[#FBFBFA]/80 flex items-start gap-3 backdrop-blur-sm sticky top-0 z-10 shrink-0">
+        <div className="mt-0.5 shrink-0">
+          {getFileIcon(selectedFile.type)}
         </div>
-        <div className="text-xs text-text-secondary flex gap-2">
-          <span>{selectedFile.type.toUpperCase()}</span>
-          <span>•</span>
-          <span>{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</span>
+        <div className="flex-1 min-w-0">
+          <h2 className="font-semibold text-gray-900 text-[13px] leading-tight break-all mb-1" title={selectedFile.name}>
+            {selectedFile.name}
+          </h2>
+          <div className="text-[11px] text-gray-500 font-medium">
+            <span>{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</span>
+            <span className="mx-1.5">•</span>
+            <span className="uppercase">{selectedFile.type}</span>
+          </div>
         </div>
+        <button 
+          onClick={onClose}
+          className="text-gray-400 hover:text-gray-800 hover:bg-gray-200 p-1 rounded transition-colors shrink-0 -mt-1 -mr-1"
+          title="关闭"
+        >
+          <X className="w-4 h-4" />
+        </button>
       </div>
 
-      <div className="p-6">
-        <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-4 flex items-center gap-2">
-          <Hash className="w-4 h-4" />
-          属性标签
-        </h3>
-        
-        <div className="space-y-4">
-          {availableDimensions.map(dim => {
-            const values = selectedFile.attributes[dim] || [];
-            const isAdding = newTagInput.dim === dim;
-            
-            const existingTags = isAdding ? getExistingTags(dim) : [];
-            const filteredTags = existingTags.filter(t => 
-              t.toLowerCase().includes(newTagInput.val.toLowerCase()) && 
-              !values.includes(t)
-            );
-            
-            return (
-              <div key={dim} className="bg-white border border-border p-3 rounded-lg shadow-sm">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs text-text-secondary font-medium">{dim}</span>
-                  {!isAdding && (
-                    <button 
-                      onClick={() => setNewTagInput({ dim, val: '' })}
-                      className="text-gray-400 hover:text-indigo-600 transition-colors bg-accent rounded p-0.5"
-                    >
-                      <Plus className="w-3 h-3" />
-                    </button>
-                  )}
-                </div>
-                
-                <div className="flex flex-wrap gap-2 relative">
-                  {values.map(val => (
-                    <div key={val} className="flex items-center gap-1 bg-indigo-50 text-indigo-700 px-2 py-1 rounded text-xs border border-indigo-100 shadow-sm">
-                      <span>{val}</span>
-                      <button 
-                        onClick={() => handleRemoveTag(dim, val)}
-                        className="hover:text-red-500 hover:bg-indigo-100 rounded-full cursor-pointer ml-1 p-0.5 transition-colors"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </div>
-                  ))}
+      <div className="flex-1 overflow-y-auto custom-scrollbar p-5">
+        <div className="mb-6">
+          <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-widest mb-3 px-1">
+            属性 (Properties)
+          </h3>
+          
+          {/* Notion/Linear Style Property List */}
+          <div className="flex flex-col border border-gray-100 rounded-lg bg-white shadow-sm divide-y divide-gray-100">
+            {activeDimensions.map(dim => {
+              const values = selectedFile.attributes[dim] || [];
+              const isAdding = newTagInput.dim === dim;
+              const isComputed = dim === '文件类型';
+              
+              const existingTags = isAdding ? getExistingTags(dim) : [];
+              const filteredTags = existingTags.filter(t => 
+                t.toLowerCase().includes(newTagInput.val.toLowerCase()) && 
+                !values.includes(t)
+              );
+              
+              return (
+                <div key={dim} className="flex min-h-[40px] py-1.5 px-3 hover:bg-gray-50/50 transition-colors group first:rounded-t-lg last:rounded-b-lg relative">
+                  <div className="w-[90px] shrink-0 flex items-center gap-2 text-gray-500 py-1 font-medium text-xs select-none">
+                    <span className="opacity-70">{getDimIcon(dim)}</span>
+                    <span className="truncate" title={dim}>{dim}</span>
+                  </div>
                   
-                  {isAdding && (
-                    <div className="relative w-full mt-1">
-                      <input 
-                        autoFocus
-                        type="text" 
-                        value={newTagInput.val}
-                        onChange={(e) => setNewTagInput({ dim, val: e.target.value })}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') handleAddTag(dim, newTagInput.val);
-                          if (e.key === 'Escape') setNewTagInput({ dim: '', val: '' });
-                        }}
-                        onBlur={() => {
-                          // Allow mousedown to fire on dropdown options before blur closes input
-                          setTimeout(() => handleAddTag(dim, newTagInput.val), 150);
-                        }}
-                        className="flex-1 border border-indigo-300 rounded text-xs px-2 py-1 outline-none focus:ring-1 focus:ring-indigo-500 w-full"
-                        placeholder={`搜索或添加${dim}...`}
-                      />
-                      
-                      {filteredTags.length > 0 && (
-                        <div className="absolute top-full left-0 w-full mt-1 bg-white border border-border shadow-lg rounded-md max-h-40 overflow-y-auto z-10">
-                          {filteredTags.map(tag => (
-                            <div 
-                              key={tag}
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                handleAddTag(dim, tag);
-                              }}
-                              className="px-3 py-2 text-xs hover:bg-indigo-50 cursor-pointer text-primary transition-colors"
-                            >
-                              {tag}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {values.length === 0 && !isAdding && (
-                    <span className="text-xs text-gray-300 italic">空</span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </div>
+                  <div className="flex-1 flex flex-wrap items-center gap-1.5 relative min-w-0 py-0.5 ml-2">
+                    {values.length === 0 && !isAdding && (
+                      <span className="text-gray-300 text-xs italic px-1 h-6 flex items-center">Empty</span>
+                    )}
 
-      <div className="p-6 border-t border-border mt-auto">
-        <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-4 flex items-center gap-2">
-          <Network className="w-4 h-4 text-indigo-500" />
-          当前视图下的虚拟映射
+                    {values.map(val => {
+                      const style = getTagStyle(val);
+                      return (
+                        <div key={val} className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium group/pill" style={{ backgroundColor: style.bg, color: style.text }}>
+                          <span className="truncate max-w-[120px]">{val}</span>
+                          {!isComputed && (
+                            <button 
+                              onClick={(e) => { e.stopPropagation(); handleRemoveTag(dim, val); }}
+                              className="opacity-0 group-hover/pill:opacity-100 hover:bg-black/10 rounded-sm p-0.5 transition-all -mr-1"
+                            >
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          )}
+                        </div>
+                      )
+                    })}
+                    
+                    {isAdding ? (
+                      <div className="relative flex-1 min-w-[100px] flex items-center">
+                        <input 
+                          ref={inputRef}
+                          type="text" 
+                          value={newTagInput.val}
+                          onChange={(e) => setNewTagInput({ dim, val: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleAddTag(dim, newTagInput.val);
+                            if (e.key === 'Escape') setNewTagInput({ dim: '', val: '' });
+                          }}
+                          onBlur={() => {
+                            setTimeout(() => handleAddTag(dim, newTagInput.val), 150);
+                          }}
+                          className="flex-1 bg-transparent border-none p-0 focus:ring-0 text-xs text-gray-800 outline-none w-full h-6 placeholder-gray-300"
+                          placeholder="Type a tag..."
+                        />
+                        
+                        {filteredTags.length > 0 && (
+                          <div className="absolute top-full left-0 mt-1 min-w-[140px] bg-white border border-gray-100 shadow-xl rounded-lg max-h-40 overflow-y-auto z-20 overflow-hidden py-1">
+                            {filteredTags.map(tag => {
+                              const style = getTagStyle(tag);
+                              return (
+                                <div 
+                                  key={tag}
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    handleAddTag(dim, tag);
+                                  }}
+                                  className="px-3 py-1.5 hover:bg-gray-50 cursor-pointer transition-colors"
+                                >
+                                  <span className="px-2 py-0.5 rounded-md text-[11px] font-medium inline-block" style={{ backgroundColor: style.bg, color: style.text }}>
+                                    {tag}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      !isComputed && (
+                        <button 
+                          onClick={() => setNewTagInput({ dim, val: '' })}
+                          className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-800 hover:bg-gray-100 transition-all rounded p-0.5 h-5 flex items-center justify-center -ml-0.5"
+                          title="Add tag"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Add Property Button */}
+          {emptyDimensions.length > 0 && (
+            <div className="mt-2 relative">
+              <button 
+                onClick={() => setShowAddDimMenu(!showAddDimMenu)}
+                className="text-xs text-gray-400 hover:text-gray-800 flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-gray-100 transition-colors font-medium w-full text-left"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                添加属性...
+              </button>
+              
+              {showAddDimMenu && (
+                <div className="absolute top-full left-0 mt-1 w-[200px] bg-white border border-gray-100 shadow-xl rounded-lg z-20 py-1 overflow-hidden">
+                  <div className="px-3 py-1.5 text-[10px] uppercase font-semibold text-gray-400 tracking-wider">选择属性维度</div>
+                  {emptyDimensions.map(dim => (
+                    <button
+                      key={dim}
+                      onClick={() => {
+                        setForceVisibleDims(prev => new Set(prev).add(dim));
+                        setShowAddDimMenu(false);
+                        setNewTagInput({ dim, val: '' });
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                    >
+                      <span className="opacity-60">{getDimIcon(dim)}</span>
+                      {dim}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-widest mb-3 px-1 flex items-center gap-1.5">
+          <Network className="w-3.5 h-3.5" />
+          虚拟目录映射
         </h3>
         {virtualPaths.length > 0 ? (
-          <div className="space-y-2">
+          <div className="space-y-1.5 border border-gray-100 rounded-lg p-3 bg-white shadow-sm">
             {virtualPaths.map((path, idx) => (
-              <div key={idx} className="bg-white border border-border rounded-md px-3 py-2 text-xs text-text-secondary flex gap-1 overflow-x-auto whitespace-nowrap scrollbar-hide flex-wrap">
+              <div key={idx} className="bg-gray-50 rounded px-2.5 py-1.5 text-[11px] text-gray-500 flex gap-1 items-center flex-wrap">
                 {path.length === 0 ? <span className="text-gray-400 italic">根目录</span> : null}
                 {path.map((segment, i) => (
                   <Fragment key={i}>
-                    <span className="text-primary font-medium">{segment}</span>
-                    {i < path.length - 1 && <span className="text-gray-400">/</span>}
+                    <span className="text-gray-800 font-medium">{segment}</span>
+                    {i < path.length - 1 && <span className="text-gray-300">/</span>}
                   </Fragment>
                 ))}
               </div>
             ))}
           </div>
         ) : (
-          <div className="text-xs text-gray-400 italic">
+          <div className="text-xs text-gray-400 italic px-2">
             由于维度的值缺少，文件在当前视图不可见
           </div>
         )}

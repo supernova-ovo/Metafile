@@ -11,7 +11,7 @@ export function buildTree(files: FileItem[], dimensionOrder: string[]): VirtualF
   };
 
   for (const file of files) {
-    const hasAnyTag = Object.keys(file.attributes).some(key => file.attributes[key] && file.attributes[key].length > 0);
+    const hasAnyTag = Object.keys(file.attributes).some(key => key !== '文件类型' && file.attributes[key] && file.attributes[key].length > 0);
     
     if (!hasAnyTag) {
       if (!root.subFolders['待处理 (Inbox)']) {

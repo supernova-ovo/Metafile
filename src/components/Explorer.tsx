@@ -94,7 +94,7 @@ export function Explorer({
          return (now.getTime() - fd.getTime()) < 7 * 24 * 60 * 60 * 1000;
       });
     } else if (quickFilter === 'uncategorized') {
-      tempFiles = tempFiles.filter(f => Object.keys(f.attributes).every(k => f.attributes[k].length === 0));
+      tempFiles = tempFiles.filter(f => Object.keys(f.attributes).every(k => k === '文件类型' || f.attributes[k].length === 0));
     } else if (quickFilter === 'large') {
       tempFiles = tempFiles.filter(f => f.size > 5 * 1024 * 1024);
     }
@@ -241,7 +241,7 @@ export function Explorer({
                   className={cn("flex flex-col gap-3 p-4 rounded-xl border cursor-pointer transition-all shadow-sm hover:shadow", colors.bg, colors.border)}
                 >
                   <div className="flex items-center gap-3">
-                    <Folder className={cn("w-8 h-8", colors.text, colors.fill)} />
+                    <Folder className={cn("w-8 h-8 shrink-0", colors.text, colors.fill)} />
                     <div className="flex flex-col overflow-hidden">
                       <span className="font-medium text-sm truncate text-primary">{folder.name}</span>
                       <span className="text-xs text-text-secondary">{folder.dimension}分类</span>
