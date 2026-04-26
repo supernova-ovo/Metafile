@@ -5,55 +5,19 @@ import { Inspector } from './components/Inspector';
 import { UploadModal } from './components/UploadModal';
 import { Management } from './components/Management';
 import { UploadCloud } from 'lucide-react';
-import { mockFiles } from './lib/mock-data';
 import { buildTree } from './lib/tree';
 import type { FileItem, ActiveFilter } from './lib/types';
+import { fileService } from './services/fileService';
+import { preferenceService } from './services/preferenceService';
 
 function App() {
-  const processFiles = (rawFiles: FileItem[]) => {
-    return rawFiles.map(f => ({
-      ...f,
-      attributes: {
-        ...f.attributes,
-        '文件类型': [f.type.toUpperCase()]
-      }
-    }));
-  };
-
-  const [files, setFiles] = useState<FileItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('metafile_files');
-      return saved ? processFiles(JSON.parse(saved)) : processFiles(mockFiles);
-    } catch {
-      return processFiles(mockFiles);
-    }
-  });
+  const [files, setFiles] = useState<FileItem[]>(() => fileService.getFiles());
   
-  const [dimensionOrder, setDimensionOrder] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('metafile_dimensions');
-      return saved ? JSON.parse(saved) : ['项目'];
-    } catch {
-      return ['项目'];
-    }
-  });
+  const [dimensionOrder, setDimensionOrder] = useState<string[]>(() => preferenceService.getDimensionOrder());
   
-  const [currentPath, setCurrentPath] = useState<string[]>(() => {
-    try {
-      const saved = localStorage.getItem('metafile_path');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [currentPath, setCurrentPath] = useState<string[]>(() => preferenceService.getCurrentPath());
 
-  const [selectedFileId, setSelectedFileId] = useState<string | null>(() => {
-    try {
-      return localStorage.getItem('metafile_selectedFile') || null;
-    } catch {
-      return null;
-    }
-  });
+  const [selectedFileId, setSelectedFileId] = useState<string | null>(() => preferenceService.getSelectedFileId());
   
   const [isDragging, setIsDragging] = useState(false);
   const [dragCounter, setDragCounter] = useState(0);
@@ -103,29 +67,7 @@ function App() {
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const droppedFiles = Array.from(e.dataTransfer.files);
-      
-      const baseAttributes: Record<string, string[]> = {};
-      currentPath.forEach((segment, idx) => {
-        const dim = dimensionOrder[idx];
-        if (dim && dim !== '文件类型') baseAttributes[dim] = [segment];
-      });
-
-      const newFileItems: FileItem[] = droppedFiles.map((f, i) => {
-        const fileExt = f.name.split('.').pop() || 'unknown';
-        return {
-          id: `upload-${Date.now()}-${i}`,
-          name: f.name,
-          type: fileExt,
-          size: f.size,
-          updatedAt: new Date(f.lastModified).toISOString(),
-          attributes: {
-            ...JSON.parse(JSON.stringify(baseAttributes)),
-            '文件类型': [fileExt.toUpperCase()]
-          }
-        };
-      });
-
-      setUploadModalFiles(newFileItems);
+      setUploadModalFiles(fileService.createUploadDrafts(droppedFiles, currentPath, dimensionOrder));
     }
   };
 
@@ -142,35 +84,28 @@ function App() {
 
   // Sync to LocalStorage
   useEffect(() => {
-    localStorage.setItem('metafile_files', JSON.stringify(files));
+    fileService.saveFiles(files);
   }, [files]);
 
   useEffect(() => {
-    localStorage.setItem('metafile_dimensions', JSON.stringify(dimensionOrder));
+    preferenceService.saveDimensionOrder(dimensionOrder);
   }, [dimensionOrder]);
 
   useEffect(() => {
-    localStorage.setItem('metafile_path', JSON.stringify(currentPath));
+    preferenceService.saveCurrentPath(currentPath);
   }, [currentPath]);
 
   useEffect(() => {
-    if (selectedFileId) {
-      localStorage.setItem('metafile_selectedFile', selectedFileId);
-    } else {
-      localStorage.removeItem('metafile_selectedFile');
-    }
+    preferenceService.saveSelectedFileId(selectedFileId);
   }, [selectedFileId]);
 
   const handleResetSystem = () => {
     if (window.confirm('确定要重置整个文件系统并清空所有上传与修改的数据吗？')) {
-      localStorage.removeItem('metafile_files');
-      localStorage.removeItem('metafile_dimensions');
-      localStorage.removeItem('metafile_path');
-      localStorage.removeItem('metafile_selectedFile');
-      setFiles(processFiles(mockFiles));
-      setDimensionOrder(['项目']);
-      setCurrentPath([]);
-      setSelectedFileId(null);
+      const resetPreferences = preferenceService.resetPreferences();
+      setFiles(fileService.resetFiles());
+      setDimensionOrder(resetPreferences.dimensionOrder);
+      setCurrentPath(resetPreferences.currentPath);
+      setSelectedFileId(resetPreferences.selectedFileId);
     }
   };
 
@@ -195,18 +130,7 @@ function App() {
   }
 
   const handleUpdateAttributes = (fileId: string, newAttrs: Record<string, string[]>) => {
-    setFiles(prev => prev.map(f => {
-      if (f.id === fileId) {
-        return {
-          ...f,
-          attributes: {
-            ...newAttrs,
-            '文件类型': [f.type.toUpperCase()] // Ensure it cannot be overwritten
-          }
-        };
-      }
-      return f;
-    }));
+    setFiles(prev => fileService.updateAttributes(prev, fileId, newAttrs));
   };
 
   const handleNavigatePath = (index: number) => {
