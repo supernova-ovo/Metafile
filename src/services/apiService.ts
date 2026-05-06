@@ -389,6 +389,27 @@ async function removeFileTag(wjid: string, bqid: string): Promise<boolean> {
   return removeResult.STATUS === 'Success' || removeResult.STATUS === 'OK';
 }
 
+export async function removeAllFileTags(fileId: string): Promise<boolean> {
+  const rows = await queryFileTags(fileId);
+  if (rows.length === 0) return true;
+
+  const removeResult = await apiRequest({
+    id: SECTION_IDS.FILE_TAGS,
+    mode: 'remove',
+    data: encodeData({
+      deleted: rows.map((row) => ({ sys_id: row.sys_id })),
+    }),
+  });
+
+  return removeResult.STATUS === 'Success' || removeResult.STATUS === 'OK';
+}
+
+export async function deleteFileWithRelations(fileId: string): Promise<boolean> {
+  const relationsRemoved = await removeAllFileTags(fileId);
+  if (!relationsRemoved) return false;
+  return deleteFileRecord(fileId);
+}
+
 // ============================================================
 // D_WJGL_YHPH 用户偏好 CRUD
 // ============================================================

@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Explorer } from './components/Explorer';
 import { Inspector } from './components/Inspector';
+import { DeleteFileModal } from './components/DeleteFileModal';
+import { StatusToast } from './components/StatusToast';
 import { UploadModal } from './components/UploadModal';
 import { uploadFilesWithBackendSync } from './services/jetopApiService';
 import { Management } from './components/Management';
@@ -23,6 +25,10 @@ function App() {
   const [dragCounter, setDragCounter] = useState(0);
   const [uploadModalFiles, setUploadModalFiles] = useState<FileItem[]>([]);
   const [pendingBrowserFiles, setPendingBrowserFiles] = useState<File[]>([]);
+  const [pendingDeleteFileId, setPendingDeleteFileId] = useState<string | null>(null);
+  const [isDeletingFile, setIsDeletingFile] = useState(false);
+  const [deleteFileError, setDeleteFileError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ title: string; message: string; tone: 'success' | 'error' } | null>(null);
   
   // View mode
   const [viewMode, setViewMode] = useState<'explorer' | 'management'>('explorer');
@@ -125,6 +131,12 @@ function App() {
     preferenceService.saveSelectedFileId(selectedFileId);
   }, [selectedFileId]);
 
+  useEffect(() => {
+    if (!toast) return;
+    const timeout = window.setTimeout(() => setToast(null), 3200);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
   const handleResetSystem = async () => {
     if (window.confirm('确定要重置整个文件系统并清空所有上传与修改的数据吗？')) {
       const resetPrefs = await preferenceService.resetPreferences();
@@ -159,6 +171,31 @@ function App() {
     setFiles(prev => fileService.updateAttributes(prev, fileId, newAttrs));
   };
 
+  const handleDeleteFile = async (fileId: string) => {
+    setDeleteFileError(null);
+    setPendingDeleteFileId(fileId);
+  };
+
+  const handleConfirmDeleteFile = async () => {
+    if (!pendingDeleteFileId) return;
+
+    try {
+      setIsDeletingFile(true);
+      await fileService.deleteFile(pendingDeleteFileId);
+      setFiles(prev => prev.filter(file => file.id !== pendingDeleteFileId));
+      if (selectedFileId === pendingDeleteFileId) {
+        setSelectedFileId(null);
+      }
+      setPendingDeleteFileId(null);
+      setDeleteFileError(null);
+    } catch (error) {
+      console.error('[App] 删除文件失败:', error);
+      setDeleteFileError('删除失败，后端记录未能成功移除，请稍后重试。');
+    } finally {
+      setIsDeletingFile(false);
+    }
+  };
+
   const handleNavigatePath = (index: number) => {
     if (index === -1) {
       setCurrentPath([]);
@@ -183,8 +220,18 @@ function App() {
       const result = await uploadFilesWithBackendSync(pendingBrowserFiles, finalFiles);
       if (result.success) {
         console.log('✅ 上传完成:', result.message);
+        setToast({
+          title: '上传成功',
+          message: result.message,
+          tone: 'success',
+        });
       } else {
         console.warn('⚠️ 上传结果:', result.message);
+        setToast({
+          title: '上传未完成',
+          message: result.message,
+          tone: 'error',
+        });
       }
       result.fileResults.forEach(r => {
         if (r.url) {
@@ -228,6 +275,36 @@ function App() {
         />
       )}
 
+      {pendingDeleteFileId && (() => {
+        const pendingDeleteFile = files.find(file => file.id === pendingDeleteFileId);
+        if (!pendingDeleteFile) return null;
+
+        return (
+          <DeleteFileModal
+            file={pendingDeleteFile}
+            isDeleting={isDeletingFile}
+            errorMessage={deleteFileError}
+            onCancel={() => {
+              if (isDeletingFile) return;
+              setPendingDeleteFileId(null);
+              setDeleteFileError(null);
+            }}
+            onConfirm={handleConfirmDeleteFile}
+          />
+        );
+      })()}
+
+      {toast && (
+        <div className="pointer-events-none fixed right-6 top-6 z-[120]">
+          <StatusToast
+            title={toast.title}
+            message={toast.message}
+            tone={toast.tone}
+            onClose={() => setToast(null)}
+          />
+        </div>
+      )}
+
       {viewMode === 'explorer' ? (
         <>
           <Sidebar 
@@ -256,6 +333,7 @@ function App() {
             allFiles={files}
             dimensionOrder={dimensionOrder}
             onUpdateAttributes={handleUpdateAttributes}
+            onDeleteFile={handleDeleteFile}
             onClose={() => setSelectedFileId(null)}
           />
         </>

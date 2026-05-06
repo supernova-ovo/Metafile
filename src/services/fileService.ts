@@ -183,6 +183,14 @@ export const fileService = {
     return updatedFiles;
   },
 
+  async deleteFile(fileId: string): Promise<boolean> {
+    const deleted = await apiService.deleteFileWithRelations(fileId);
+    if (!deleted) {
+      throw new Error('删除后端文件记录失败');
+    }
+    return true;
+  },
+
   /**
    * 创建上传草稿（不变，纯前端操作）
    */

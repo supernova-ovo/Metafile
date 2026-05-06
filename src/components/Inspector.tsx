@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react';
-import { X, Plus, Network, Tag, Calendar, Building, Briefcase, FileType, CheckCircle2, FileText, FileSpreadsheet, Image, Presentation, File as FileIcon } from 'lucide-react';
+import { X, Plus, Network, Tag, Calendar, Building, Briefcase, FileType, CheckCircle2, FileText, FileSpreadsheet, Image, Presentation, File as FileIcon, Trash2 } from 'lucide-react';
 import type { FileItem } from '../lib/types';
 import { availableDimensions } from '../lib/mock-data';
 import { findPathsForFile } from '../lib/tree';
@@ -50,10 +50,11 @@ interface InspectorProps {
   allFiles: FileItem[];
   dimensionOrder: string[];
   onUpdateAttributes: (id: string, newAttrs: Record<string, string[]>) => void;
+  onDeleteFile: (id: string) => void | Promise<void>;
   onClose: () => void;
 }
 
-export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttributes, onClose }: InspectorProps) {
+export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttributes, onDeleteFile, onClose }: InspectorProps) {
   const [newTagInput, setNewTagInput] = useState<{ dim: string; val: string }>({ dim: '', val: '' });
   const [showAddDimMenu, setShowAddDimMenu] = useState(false);
   const [forceVisibleDims, setForceVisibleDims] = useState<Set<string>>(new Set());
@@ -321,6 +322,16 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
             由于维度的值缺少，文件在当前视图不可见
           </div>
         )}
+
+        <div className="mt-6 border-t border-gray-100 pt-4">
+          <button
+            onClick={() => onDeleteFile(selectedFile.id)}
+            className="flex w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-100"
+          >
+            <Trash2 className="h-4 w-4" />
+            删除文件
+          </button>
+        </div>
       </div>
     </div>
   );
