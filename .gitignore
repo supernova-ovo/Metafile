@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Database (SQLite binary - schema only in database/schema.sql)
+database/metafile.db
+database/metafile.db-wal
+database/metafile.db-shm

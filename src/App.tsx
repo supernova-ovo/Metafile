@@ -3,34 +3,59 @@ import { Sidebar } from './components/Sidebar';
 import { Explorer } from './components/Explorer';
 import { Inspector } from './components/Inspector';
 import { UploadModal } from './components/UploadModal';
+import { uploadFilesWithBackendSync } from './services/jetopApiService';
 import { Management } from './components/Management';
 import { UploadCloud } from 'lucide-react';
 import { buildTree } from './lib/tree';
+import { buildAvailableTagValues } from './lib/mock-data';
 import type { FileItem, ActiveFilter } from './lib/types';
 import { fileService } from './services/fileService';
 import { preferenceService } from './services/preferenceService';
 
 function App() {
+  // 先用 LocalStorage 缓存数据初始化（同步，用于立即渲染）
   const [files, setFiles] = useState<FileItem[]>(() => fileService.getFiles());
-  
   const [dimensionOrder, setDimensionOrder] = useState<string[]>(() => preferenceService.getDimensionOrder());
-  
   const [currentPath, setCurrentPath] = useState<string[]>(() => preferenceService.getCurrentPath());
-
   const [selectedFileId, setSelectedFileId] = useState<string | null>(() => preferenceService.getSelectedFileId());
   
   const [isDragging, setIsDragging] = useState(false);
   const [dragCounter, setDragCounter] = useState(0);
   const [uploadModalFiles, setUploadModalFiles] = useState<FileItem[]>([]);
+  const [pendingBrowserFiles, setPendingBrowserFiles] = useState<File[]>([]);
   
   // View mode
   const [viewMode, setViewMode] = useState<'explorer' | 'management'>('explorer');
-  
   
   // Search and Filter states
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [quickFilter, setQuickFilter] = useState("all");
+
+  // 启动时异步从数据库初始化（自动写入种子数据）
+  useEffect(() => {
+    const initFromDb = async () => {
+      try {
+        console.log('[App] 正在从数据库初始化...');
+        // 并行初始化文件 + 偏好
+        const [dbFiles, dbPrefs] = await Promise.all([
+          fileService.initFromDb(),
+          preferenceService.initFromDb(),
+        ]);
+
+        // 更新状态
+        setFiles(dbFiles);
+        setDimensionOrder(dbPrefs.dimensionOrder);
+        setCurrentPath(dbPrefs.currentPath);
+        setSelectedFileId(dbPrefs.selectedFileId);
+        console.log(`[App] 数据库初始化完成: ${dbFiles.length} 个文件`);
+      } catch (error) {
+        console.warn('[App] 数据库初始化失败，使用 LocalStorage 数据:', error);
+      }
+    };
+
+    initFromDb();
+  }, []);
 
   // Drag and drop handlers
   const handleDragEnter = (e: React.DragEvent) => {
@@ -67,6 +92,7 @@ function App() {
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const droppedFiles = Array.from(e.dataTransfer.files);
+      setPendingBrowserFiles(droppedFiles);
       setUploadModalFiles(fileService.createUploadDrafts(droppedFiles, currentPath, dimensionOrder));
     }
   };
@@ -82,7 +108,7 @@ function App() {
     setSelectedFileId(null);
   }, [searchQuery, activeFilters, quickFilter]);
 
-  // Sync to LocalStorage
+  // Sync to LocalStorage + 异步同步到数据库
   useEffect(() => {
     fileService.saveFiles(files);
   }, [files]);
@@ -99,13 +125,13 @@ function App() {
     preferenceService.saveSelectedFileId(selectedFileId);
   }, [selectedFileId]);
 
-  const handleResetSystem = () => {
+  const handleResetSystem = async () => {
     if (window.confirm('确定要重置整个文件系统并清空所有上传与修改的数据吗？')) {
-      const resetPreferences = preferenceService.resetPreferences();
+      const resetPrefs = await preferenceService.resetPreferences();
       setFiles(fileService.resetFiles());
-      setDimensionOrder(resetPreferences.dimensionOrder);
-      setCurrentPath(resetPreferences.currentPath);
-      setSelectedFileId(resetPreferences.selectedFileId);
+      setDimensionOrder(resetPrefs.dimensionOrder);
+      setCurrentPath(resetPrefs.currentPath);
+      setSelectedFileId(resetPrefs.selectedFileId);
     }
   };
 
@@ -147,6 +173,28 @@ function App() {
     setSelectedFileId(null);
   };
 
+  const handleUploadConfirm = async (finalFiles: FileItem[]) => {
+    setFiles(prev => [...prev, ...finalFiles]);
+    setUploadModalFiles([]);
+
+    // 完整流程：上传文件到 upload_json.ashx → 获取公网URL → 保存元数据（含Url）到后端
+    if (pendingBrowserFiles.length > 0) {
+      console.log('🚀 开始完整上传流程...');
+      const result = await uploadFilesWithBackendSync(pendingBrowserFiles, finalFiles);
+      if (result.success) {
+        console.log('✅ 上传完成:', result.message);
+      } else {
+        console.warn('⚠️ 上传结果:', result.message);
+      }
+      result.fileResults.forEach(r => {
+        if (r.url) {
+          console.log(`  📎 ${r.fileName} → ${r.url}`);
+        }
+      });
+      setPendingBrowserFiles([]);
+    }
+  };
+
   const selectedFile = files.find(f => f.id === selectedFileId);
 
   return (
@@ -171,11 +219,12 @@ function App() {
         <UploadModal 
           files={uploadModalFiles} 
           dimensionOrder={dimensionOrder}
-          onCancel={() => setUploadModalFiles([])}
-          onConfirm={(finalFiles) => {
-            setFiles(prev => [...prev, ...finalFiles]);
+          availableTagValues={buildAvailableTagValues(files)}
+          onCancel={() => {
             setUploadModalFiles([]);
+            setPendingBrowserFiles([]);
           }}
+          onConfirm={handleUploadConfirm}
         />
       )}
 

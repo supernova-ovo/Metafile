@@ -171,4 +171,27 @@ export const mockFiles: FileItem[] = [
   }
 ];
 
+/**
+ * 从 mockFiles 中提取每个维度的所有已有标签值
+ * 前端会动态合并用户自定义新增的标签
+ */
+export function buildAvailableTagValues(files: FileItem[]): Record<string, string[]> {
+  const values: Record<string, Set<string>> = {};
+  
+  for (const file of files) {
+    for (const [dim, vals] of Object.entries(file.attributes)) {
+      if (!values[dim]) values[dim] = new Set();
+      for (const v of vals) {
+        values[dim].add(v);
+      }
+    }
+  }
+
+  const result: Record<string, string[]> = {};
+  for (const [dim, set] of Object.entries(values)) {
+    result[dim] = Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  }
+  return result;
+}
+
 export const availableDimensions = ['项目', '档案类别', '档案分类', '状态', '年份', '文件类型', '密级', '部门'];

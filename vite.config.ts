@@ -8,4 +8,24 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  server: {
+    proxy: {
+      '/ks': {
+        target: 'https://test1.tepc.cn/jetopcms',
+        changeOrigin: true,
+        secure: false,
+        headers: {
+          'host': 'localhost',
+        },
+      },
+      '/editor': {
+        target: 'https://test1.tepc.cn/jetopcms',
+        changeOrigin: true,
+        secure: false,
+        headers: {
+          'host': 'localhost',
+        },
+      },
+    },
+  },
 })
