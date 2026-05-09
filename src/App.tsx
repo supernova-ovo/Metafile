@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Explorer } from './components/Explorer';
 import { Inspector } from './components/Inspector';
@@ -37,9 +37,16 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [quickFilter, setQuickFilter] = useState("all");
+  const isBootstrappingRef = useRef(true);
+  const hasInitRunRef = useRef(false);
+  const skipNextDbSyncRef = useRef(false);
+  const isHydratingAttrsRef = useRef(false);
 
   // 启动时异步从数据库初始化（自动写入种子数据）
   useEffect(() => {
+    if (hasInitRunRef.current) return;
+    hasInitRunRef.current = true;
+
     const initFromDb = async () => {
       try {
         console.log('[App] 正在从数据库初始化...');
@@ -60,7 +67,9 @@ function App() {
       }
     };
 
-    initFromDb();
+    initFromDb().finally(() => {
+      isBootstrappingRef.current = false;
+    });
   }, []);
 
   // Drag and drop handlers
@@ -103,9 +112,9 @@ function App() {
     }
   };
 
-  // Validate current path when dimensions change
+  // 当维度顺序变更时重置路径（维度结构变化，路径失效）
   useEffect(() => {
-    setCurrentPath([]); 
+    setCurrentPath([]);
     setSelectedFileId(null);
   }, [dimensionOrder]);
 
@@ -116,18 +125,51 @@ function App() {
 
   // Sync to LocalStorage + 异步同步到数据库
   useEffect(() => {
+    if (isBootstrappingRef.current) return;
+    if (skipNextDbSyncRef.current) {
+      fileService.saveFiles(files, { skipDbSync: true });
+      skipNextDbSyncRef.current = false;
+      return;
+    }
+    if (isHydratingAttrsRef.current) {
+      fileService.saveFiles(files, { skipDbSync: true });
+      isHydratingAttrsRef.current = false;
+      return;
+    }
     fileService.saveFiles(files);
   }, [files]);
 
   useEffect(() => {
+    if (isBootstrappingRef.current) return;
+    if (!selectedFileId) return;
+    let cancelled = false;
+
+    void (async () => {
+      const next = await fileService.hydrateFileAttributes(files, selectedFileId);
+      if (cancelled) return;
+      if (next !== files) {
+        isHydratingAttrsRef.current = true;
+        setFiles(next);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFileId, files]);
+
+  useEffect(() => {
+    if (isBootstrappingRef.current) return;
     preferenceService.saveDimensionOrder(dimensionOrder);
   }, [dimensionOrder]);
 
   useEffect(() => {
+    if (isBootstrappingRef.current) return;
     preferenceService.saveCurrentPath(currentPath);
   }, [currentPath]);
 
   useEffect(() => {
+    if (isBootstrappingRef.current) return;
     preferenceService.saveSelectedFileId(selectedFileId);
   }, [selectedFileId]);
 
@@ -148,23 +190,19 @@ function App() {
   };
 
   const rootFolder = buildTree(files, dimensionOrder);
-  
-  let currentFolder = rootFolder;
-  let pathValid = true;
 
+  // 构建当前文件夹
+  // 修复：不再因"目录变空"就跳回根目录。
+  // 只有当路径层级超过 dimensionOrder 深度时（维度被删减），才重置路径。
+  // 若某一层的目录不存在（文件都被移走标签），则停留在能到达的最深父级，显示空目录状态。
+  let currentFolder = rootFolder;
   for (const segment of currentPath) {
     if (currentFolder.subFolders[segment]) {
       currentFolder = currentFolder.subFolders[segment];
     } else {
-      pathValid = false;
+      // 该层目录已不存在（标签变更导致目录变空），停在此父级
       break;
     }
-  }
-
-  // If path becomes invalid due to attribute changes or dimension changes
-  if (!pathValid) {
-    setCurrentPath([]);
-    currentFolder = rootFolder;
   }
 
   const handleUpdateAttributes = (fileId: string, newAttrs: Record<string, string[]>) => {
@@ -211,6 +249,8 @@ function App() {
   };
 
   const handleUploadConfirm = async (finalFiles: FileItem[]) => {
+    // 上传流程会单独调用 uploadFilesWithBackendSync 写主表，避免重复触发自动全量写库。
+    skipNextDbSyncRef.current = pendingBrowserFiles.length > 0;
     setFiles(prev => [...prev, ...finalFiles]);
     setUploadModalFiles([]);
 
@@ -219,6 +259,7 @@ function App() {
       console.log('🚀 开始完整上传流程...');
       const result = await uploadFilesWithBackendSync(pendingBrowserFiles, finalFiles);
       if (result.success) {
+        await fileService.syncUploadedAttributes(finalFiles);
         console.log('✅ 上传完成:', result.message);
         setToast({
           title: '上传成功',

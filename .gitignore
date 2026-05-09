@@ -27,3 +27,6 @@ dist-ssr
 database/metafile.db
 database/metafile.db-wal
 database/metafile.db-shm
+
+test-remove.cjs
+test-remove.js

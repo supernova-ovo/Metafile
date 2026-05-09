@@ -17,6 +17,53 @@ export const defaultPreferences: AppPreferences = {
 
 // 内存缓存，避免频繁查询数据库
 let cachedPreferences: AppPreferences | null = null;
+let pendingPrefs: { dimensionOrder?: string[]; currentPath?: string[]; selectedFileId?: string | null } = {};
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+let isFlushing = false;
+const SAVE_DEBOUNCE_MS = 200;
+
+function sameStringArray(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function enqueuePreferenceUpdate(patch: { dimensionOrder?: string[]; currentPath?: string[]; selectedFileId?: string | null }) {
+  pendingPrefs = { ...pendingPrefs, ...patch };
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+  }
+  pendingTimer = setTimeout(async () => {
+    pendingTimer = null;
+    if (isFlushing) return;
+    const payload = pendingPrefs;
+    pendingPrefs = {};
+    if (
+      payload.dimensionOrder === undefined &&
+      payload.currentPath === undefined &&
+      payload.selectedFileId === undefined
+    ) {
+      return;
+    }
+    isFlushing = true;
+    try {
+      await apiService.upsertPreference(payload);
+    } catch (e) {
+      console.warn('[DB] 保存偏好失败:', e);
+    } finally {
+      isFlushing = false;
+      if (
+        pendingPrefs.dimensionOrder !== undefined ||
+        pendingPrefs.currentPath !== undefined ||
+        pendingPrefs.selectedFileId !== undefined
+      ) {
+        enqueuePreferenceUpdate({});
+      }
+    }
+  }, SAVE_DEBOUNCE_MS);
+}
 
 /**
  * 从数据库加载用户偏好
@@ -70,11 +117,11 @@ export const preferenceService = {
   },
 
   saveDimensionOrder(dimensionOrder: string[]) {
+    const prev = cachedPreferences?.dimensionOrder;
+    if (prev && sameStringArray(prev, dimensionOrder)) return;
     storageService.setJson(LS_KEYS.dimensions, dimensionOrder);
     if (cachedPreferences) cachedPreferences.dimensionOrder = dimensionOrder;
-    apiService.upsertPreference({ dimensionOrder }).catch(e =>
-      console.warn('[DB] 保存维度排序失败:', e)
-    );
+    enqueuePreferenceUpdate({ dimensionOrder });
   },
 
   getCurrentPath() {
@@ -83,11 +130,11 @@ export const preferenceService = {
   },
 
   saveCurrentPath(currentPath: string[]) {
+    const prev = cachedPreferences?.currentPath;
+    if (prev && sameStringArray(prev, currentPath)) return;
     storageService.setJson(LS_KEYS.path, currentPath);
     if (cachedPreferences) cachedPreferences.currentPath = currentPath;
-    apiService.upsertPreference({ currentPath }).catch(e =>
-      console.warn('[DB] 保存当前路径失败:', e)
-    );
+    enqueuePreferenceUpdate({ currentPath });
   },
 
   getSelectedFileId() {
@@ -96,15 +143,15 @@ export const preferenceService = {
   },
 
   saveSelectedFileId(selectedFileId: string | null) {
+    const prev = cachedPreferences?.selectedFileId ?? null;
+    if (prev === selectedFileId) return;
     if (selectedFileId) {
       storageService.setString(LS_KEYS.selectedFile, selectedFileId);
     } else {
       storageService.remove(LS_KEYS.selectedFile);
     }
     if (cachedPreferences) cachedPreferences.selectedFileId = selectedFileId;
-    apiService.upsertPreference({ selectedFileId }).catch(e =>
-      console.warn('[DB] 保存选中文件失败:', e)
-    );
+    enqueuePreferenceUpdate({ selectedFileId });
   },
 
   async resetPreferences() {
