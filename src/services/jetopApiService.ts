@@ -10,7 +10,7 @@ const SECTION_ID_FILES = '76c22773-66cb-a51c-359b-5a2872169266';
 
 // 使用相对路径走 Vite 代理，避免 CORS 问题
 const API_HANDLER_URL = '/ks/sectionHandler.ashx';
-const UPLOAD_URL = '/editor/upload_json.ashx?dir=file';
+const UPLOAD_URL = '/ks/editor/upload_json.ashx?dir=file';
 
 /**
  * 获取认证 Token
@@ -56,7 +56,7 @@ function buildFormData(fields: Record<string, string>): { boundary: string; body
  */
 function buildFileFormData(file: File, extraFields: Record<string, string>): FormData {
   const formData = new FormData();
-  formData.append('file', file, file.name);
+  formData.append('imgFile', file, file.name);
   for (const [key, value] of Object.entries(extraFields)) {
     formData.append(key, value);
   }
@@ -202,7 +202,7 @@ async function apiRequest(formFields: Record<string, string>): Promise<any> {
  * 将带 URL 的文件记录插入 Jetop 后端
  */
 async function insertFileRecordsToBackend(
-  records: { file: { name: string; type: string; size: number; updatedAt: string; attributes: Record<string, string[]> }; url: string }[]
+  records: { file: { id?: string; name: string; type: string; size: number; updatedAt: string; attributes: Record<string, string[]> }; url: string }[]
 ): Promise<{ success: boolean; message: string; count: number }> {
   try {
     if (records.length === 0) {
@@ -211,16 +211,16 @@ async function insertFileRecordsToBackend(
 
     const insertedRecords = records.map((rec, index) => {
       const record = toFileUploadRecord(rec.file, index, rec.url);
-      record.sys_id = generateUUID();
+      record.sys_id = rec.file.id || generateUUID();
       return record;
     });
 
-    const encodedData = btoa(unescape(encodeURIComponent(JSON.stringify({ inserted: insertedRecords }))));
+    const encodedData = btoa(unescape(encodeURIComponent(JSON.stringify({ updated: insertedRecords }))));
 
     const result = await apiRequest({
       id: SECTION_ID_FILES,
-      mode: 'insert',
-      data: encodedData,
+      mode: 'update',
+      _p_data: encodedData,
     });
 
     if (result.STATUS === 'Success' || result.STATUS === 'OK') {
@@ -272,7 +272,7 @@ export interface UploadResult {
  */
 export async function uploadFilesWithBackendSync(
   browserFiles: File[],
-  fileMetas: { name: string; type: string; size: number; updatedAt: string; attributes: Record<string, string[]> }[]
+  fileMetas: { id?: string; name: string; type: string; size: number; updatedAt: string; attributes: Record<string, string[]> }[]
 ): Promise<UploadResult> {
   // 步骤1：上传文件到 upload_json.ashx
   console.log('📤 步骤1: 上传文件到服务器...');

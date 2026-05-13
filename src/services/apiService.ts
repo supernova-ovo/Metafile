@@ -293,7 +293,7 @@ export interface PrefRow {
 }
 
 const dimNameToIdCache = new Map<string, string>();
-const tagKeyToIdCache = new Map<string, string>(); // `${dimId}::${tagValue}`
+// tagKeyToIdCache 已移至 syncAttributes 函数内部（局部变量），避免跨调用 stale 缓存问题
 
 function buildTagKey(dimId: string, tagValue: string): string {
   return `${dimId}::${tagValue}`;
@@ -520,8 +520,23 @@ export async function removeAllFileTags(fileId: string): Promise<boolean> {
 }
 
 export async function deleteFileWithRelations(fileId: string): Promise<boolean> {
+  // 步骤0：若用户偏好表中 XZWJID 引用了该文件，先清空
+  // 否则外键约束 FK_D_WJGL_YHPH_XZWJID 会阻止后续的 DELETE 操作
+  try {
+    const pref = await getPreference();
+    if (pref && pref.XZWJID === fileId) {
+      await upsertPreference({ selectedFileId: null });
+    }
+  } catch (e) {
+    // 偏好清空失败时不阻断删除流程（非关键路径），仅记录警告
+    console.warn('[deleteFileWithRelations] 清空 XZWJID 偏好失败，继续尝试删除文件:', e);
+  }
+
+  // 步骤1：删除文件-标签关联（D_WJGL_WJBQ）
   const relationsRemoved = await removeAllFileTags(fileId);
   if (!relationsRemoved) return false;
+
+  // 步骤2：删除文件记录（D_WJGL_WJ）
   return deleteFileRecord(fileId);
 }
 
@@ -592,7 +607,24 @@ export async function upsertPreference(prefs: {
  * 将前端的 attributes 同步到数据库三表
  * D_WJGL_WH / D_WJGL_BQ / D_WJGL_WJBQ
  */
+const syncLocks = new Map<string, Promise<void>>();
+
 export async function syncAttributes(
+  fileId: string,
+  attributes: Record<string, string[]>
+): Promise<void> {
+  const currentLock = syncLocks.get(fileId) || Promise.resolve();
+  const nextLock = currentLock.then(async () => {
+    await _syncAttributesInner(fileId, attributes);
+  }).catch((e) => {
+    console.error('[syncAttributes] 同步队列异常:', e);
+    throw e;
+  });
+  syncLocks.set(fileId, nextLock);
+  return nextLock;
+}
+
+async function _syncAttributesInner(
   fileId: string,
   attributes: Record<string, string[]>
 ): Promise<void> {
@@ -671,8 +703,9 @@ export async function syncAttributes(
     }
   }
 
-  // 5) 预热标签缓存（最多 1 次 query）
-  if (tagKeyToIdCache.size === 0) {
+  // 5) 每次调用都重新从数据库拉取最新标签，使用局部 Map 避免全局 stale 缓存
+  const tagKeyToIdCache = new Map<string, string>();
+  {
     const tags = await queryAllTags();
     for (const t of tags) {
       if (t.WHID && t.BQZ && t.sys_id) {

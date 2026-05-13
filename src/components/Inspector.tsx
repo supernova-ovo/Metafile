@@ -60,6 +60,7 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
   const [forceVisibleDims, setForceVisibleDims] = useState<Set<string>>(new Set());
   
   const inputRef = useRef<HTMLInputElement>(null);
+  const isSubmittingRef = useRef(false);
 
   useEffect(() => {
     if (newTagInput.dim && inputRef.current) {
@@ -101,6 +102,7 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
   };
 
   const handleAddTag = (dim: string, forceVal?: string) => {
+    if (isSubmittingRef.current) return;
     const valToAdd = (forceVal !== undefined ? forceVal : newTagInput.val).trim();
     if (!valToAdd) {
       setNewTagInput({ dim: '', val: '' });
@@ -113,6 +115,7 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
     if (!updatedAttrs[dim].includes(valToAdd)) {
       updatedAttrs[dim].push(valToAdd);
     }
+    isSubmittingRef.current = true;  // 标记：已通过 Enter/点击 提交，阻止 onBlur 重复触发
     onUpdateAttributes(selectedFile.id, updatedAttrs);
     setNewTagInput({ dim: '', val: '' });
   };
@@ -220,6 +223,10 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
                             if (e.key === 'Escape') setNewTagInput({ dim: '', val: '' });
                           }}
                           onBlur={() => {
+                            if (isSubmittingRef.current) {
+                              isSubmittingRef.current = false;  // 清除 flag，跳过本次 onBlur
+                              return;
+                            }
                             setTimeout(() => handleAddTag(dim, newTagInput.val), 150);
                           }}
                           className="flex-1 bg-transparent border-none p-0 focus:ring-0 text-xs text-gray-800 outline-none w-full h-6 placeholder-gray-300"

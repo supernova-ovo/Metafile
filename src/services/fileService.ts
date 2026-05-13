@@ -280,8 +280,15 @@ export const fileService = {
       return { ...file, attributes: cloneAttributes(newAttributes) };
     });
 
+    hydratedAttributeFileIds.add(fileId);
+
+    const targetFile = updatedFiles.find(f => f.id === fileId);
+    if (targetFile) {
+      lastSyncedFingerprints.set(fileId, getFileFingerprint(targetFile));
+    }
+
     apiService.syncAttributes(fileId, newAttributes)
-      .catch(e => console.warn('[DB] 同步属性失败:', e));
+      .catch(e => console.warn([DB ] , e));
 
     return updatedFiles;
   },
