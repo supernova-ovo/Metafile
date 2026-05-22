@@ -275,7 +275,7 @@ export async function uploadFilesWithBackendSync(
   fileMetas: { id?: string; name: string; type: string; size: number; updatedAt: string; attributes: Record<string, string[]> }[]
 ): Promise<UploadResult> {
   // 步骤1：上传文件到 upload_json.ashx
-  console.log('📤 步骤1: 上传文件到服务器...');
+  // console.log('📤 步骤1: 上传文件到服务器...');
   const uploadResults = await uploadMultipleFiles(browserFiles);
 
   const failedUploads = uploadResults.filter(r => !r.success);
@@ -294,7 +294,7 @@ export async function uploadFilesWithBackendSync(
   }
 
   // 步骤2：保存元数据到后端区块
-  console.log('📤 步骤2: 保存文件元数据到后端...');
+  // console.log('📤 步骤2: 保存文件元数据到后端...');
   const records = fileMetas.map((meta, index) => ({
     file: meta,
     url: uploadResults[index].url,

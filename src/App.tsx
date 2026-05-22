@@ -13,6 +13,9 @@ import { buildAvailableTagValues } from './lib/mock-data';
 import type { FileItem, ActiveFilter } from './lib/types';
 import { fileService } from './services/fileService';
 import { preferenceService } from './services/preferenceService';
+import * as apiService from './services/apiService';
+import type { DimRow } from './services/apiService';
+import { availableDimensions as mockAvailableDimensions } from './lib/mock-data';
 
 function App() {
   // 先用 LocalStorage 缓存数据初始化（同步，用于立即渲染）
@@ -20,6 +23,11 @@ function App() {
   const [dimensionOrder, setDimensionOrder] = useState<string[]>(() => preferenceService.getDimensionOrder());
   const [currentPath, setCurrentPath] = useState<string[]>(() => preferenceService.getCurrentPath());
   const [selectedFileId, setSelectedFileId] = useState<string | null>(() => preferenceService.getSelectedFileId());
+  const [dimensions, setDimensions] = useState<DimRow[]>(
+    mockAvailableDimensions.map(d => ({ sys_id: d, WHMC: d, WHMS: d }))
+  );
+  
+  const availableDimensions = dimensions.map(d => d.WHMC);
   
   const [isDragging, setIsDragging] = useState(false);
   const [dragCounter, setDragCounter] = useState(0);
@@ -49,11 +57,12 @@ function App() {
 
     const initFromDb = async () => {
       try {
-        console.log('[App] 正在从数据库初始化...');
-        // 并行初始化文件 + 偏好
-        const [dbFiles, dbPrefs] = await Promise.all([
+        // console.log('[App] 正在从数据库初始化...');
+        // 并行初始化文件 + 偏好 + 维度
+        const [dbFiles, dbPrefs, dbDims] = await Promise.all([
           fileService.initFromDb(),
           preferenceService.initFromDb(),
+          apiService.queryAllDimensions(),
         ]);
 
         // 更新状态
@@ -61,7 +70,13 @@ function App() {
         setDimensionOrder(dbPrefs.dimensionOrder);
         setCurrentPath(dbPrefs.currentPath);
         setSelectedFileId(dbPrefs.selectedFileId);
-        console.log(`[App] 数据库初始化完成: ${dbFiles.length} 个文件`);
+        if (dbDims.length > 0) {
+          setDimensions(dbDims);
+        } else {
+          // If DB is totally empty, we might want to fallback to mock just for UI, but let's sync real dbDims
+          setDimensions(dbDims);
+        }
+        // console.log(`[App] 数据库初始化完成: ${dbFiles.length} 个文件, ${dbDims.length} 个维度`);
       } catch (error) {
         console.warn('[App] 数据库初始化失败，使用 LocalStorage 数据:', error);
       }
@@ -196,14 +211,25 @@ function App() {
   // 只有当路径层级超过 dimensionOrder 深度时（维度被删减），才重置路径。
   // 若某一层的目录不存在（文件都被移走标签），则停留在能到达的最深父级，显示空目录状态。
   let currentFolder = rootFolder;
+  const validPathSegments: string[] = [];
   for (const segment of currentPath) {
     if (currentFolder.subFolders[segment]) {
       currentFolder = currentFolder.subFolders[segment];
+      validPathSegments.push(segment);
     } else {
       // 该层目录已不存在（标签变更导致目录变空），停在此父级
       break;
     }
   }
+
+  // 自动修正失效的路径状态，防止后续点击文件夹时路径无限嵌套
+  const validPathString = validPathSegments.join('/');
+  const currentPathString = currentPath.join('/');
+  useEffect(() => {
+    if (validPathString !== currentPathString) {
+      setCurrentPath(validPathSegments);
+    }
+  }, [validPathString, currentPathString]);
 
   const handleUpdateAttributes = (fileId: string, newAttrs: Record<string, string[]>) => {
     setFiles(prev => fileService.updateAttributes(prev, fileId, newAttrs));
@@ -234,6 +260,11 @@ function App() {
     }
   };
 
+  const handleFilesChangeWithoutSync = (updater: React.SetStateAction<FileItem[]>) => {
+    skipNextDbSyncRef.current = true;
+    setFiles(updater);
+  };
+
   const handleNavigatePath = (index: number) => {
     if (index === -1) {
       setCurrentPath([]);
@@ -256,11 +287,11 @@ function App() {
 
     // 完整流程：上传文件到 upload_json.ashx → 获取公网URL → 保存元数据（含Url）到后端
     if (pendingBrowserFiles.length > 0) {
-      console.log('🚀 开始完整上传流程...');
+      // console.log('🚀 开始完整上传流程...');
       const result = await uploadFilesWithBackendSync(pendingBrowserFiles, finalFiles);
       if (result.success) {
         await fileService.syncUploadedAttributes(finalFiles);
-        console.log('✅ 上传完成:', result.message);
+        // console.log('✅ 上传完成:', result.message);
         setToast({
           title: '上传成功',
           message: result.message,
@@ -276,7 +307,7 @@ function App() {
       }
       result.fileResults.forEach(r => {
         if (r.url) {
-          console.log(`  📎 ${r.fileName} → ${r.url}`);
+          // console.log(`  📎 ${r.fileName} → ${r.url}`);
         }
       });
       setPendingBrowserFiles([]);
@@ -307,6 +338,7 @@ function App() {
         <UploadModal 
           files={uploadModalFiles} 
           dimensionOrder={dimensionOrder}
+          availableDimensions={availableDimensions}
           availableTagValues={buildAvailableTagValues(files)}
           onCancel={() => {
             setUploadModalFiles([]);
@@ -351,6 +383,7 @@ function App() {
           <Sidebar 
             dimensionOrder={dimensionOrder} 
             setDimensionOrder={setDimensionOrder} 
+            availableDimensions={availableDimensions}
             onReset={handleResetSystem}
             onOpenManagement={() => setViewMode('management')}
           />
@@ -373,6 +406,7 @@ function App() {
             selectedFile={selectedFile}
             allFiles={files}
             dimensionOrder={dimensionOrder}
+            availableDimensions={availableDimensions}
             onUpdateAttributes={handleUpdateAttributes}
             onDeleteFile={handleDeleteFile}
             onClose={() => setSelectedFileId(null)}
@@ -382,6 +416,9 @@ function App() {
         <Management 
           files={files}
           setFiles={setFiles}
+          onFilesChangeWithoutSync={handleFilesChangeWithoutSync}
+          dimensions={dimensions}
+          setDimensions={setDimensions}
           onClose={() => setViewMode('explorer')}
         />
       )}

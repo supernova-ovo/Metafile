@@ -1,17 +1,17 @@
 import { useState, useMemo } from 'react';
 import { X, UploadCloud, Tag } from 'lucide-react';
 import type { FileItem } from '../lib/types';
-import { availableDimensions } from '../lib/mock-data';
 
 interface UploadModalProps {
   files: FileItem[];
   onConfirm: (files: FileItem[]) => void;
   onCancel: () => void;
   dimensionOrder: string[];
+  availableDimensions: string[];
   availableTagValues?: Record<string, string[]>; // 所有已有标签
 }
 
-export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availableTagValues = {} }: UploadModalProps) {
+export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availableDimensions, availableTagValues = {} }: UploadModalProps) {
   const [stagedFiles, setStagedFiles] = useState<FileItem[]>(files);
   const [batchDim, setBatchDim] = useState(dimensionOrder[0] || '项目');
   const [batchVal, setBatchVal] = useState('');

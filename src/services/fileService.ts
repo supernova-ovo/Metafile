@@ -52,6 +52,7 @@ function getFileFingerprint(file: FileItem): string {
     type: file.type,
     size: file.size,
     updatedAt: file.updatedAt,
+    url: file.url,
     attributes: stableAttributesString(file.attributes),
   });
 }
@@ -74,6 +75,7 @@ function dbRowToFileItem(row: FileRow): FileItem {
     type: (row.WJLX || '').toLowerCase(),
     size: row.WJDX || 0,
     updatedAt: row.GXRQ || new Date().toISOString(),
+    url: row.Url,
     attributes: { [FILE_TYPE_DIMENSION]: [(row.WJLX || '').toUpperCase()] },
   };
 }
@@ -102,15 +104,23 @@ export const fileService = {
   async initFromDb(): Promise<FileItem[]> {
     try {
       const { ROWS, TOTAL } = await apiService.queryFiles(1, 500);
-      console.log(`[DB] queryFiles 返回: TOTAL=${TOTAL}, ROWS=${ROWS.length}`);
+      // console.log(`[DB] queryFiles 返回: TOTAL=${TOTAL}, ROWS=${ROWS.length}`);
 
       if (TOTAL === 0) {
-        // 避免初始化阶段触发大量 update/query 风暴：不在前端自动灌种子数据。
-        console.log('[DB] 数据库为空，加载前端测试数据（不写后端）。');
-        const files = cloneMockFiles();
-        storageService.setJson(LOCALSTORAGE_KEY, files);
-        markFilesAsSynced(files);
-        return files;
+        // 避免初始化阶段触发大量 update/query 风暴：不在前端自动写后端种子数据。
+        if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
+          // console.log('[DB] 开发环境且数据库为空，加载前端测试数据（仅留存在本地，不写后端）。');
+          const files = cloneMockFiles();
+          storageService.setJson(LOCALSTORAGE_KEY, files);
+          markFilesAsSynced(files);
+          return files;
+        } else {
+          // console.log('[DB] 生产环境且数据库为空，初始化为空列表。');
+          const files: FileItem[] = [];
+          storageService.setJson(LOCALSTORAGE_KEY, files);
+          markFilesAsSynced(files);
+          return files;
+        }
       }
 
       // 初始化走批量属性回填：保证首屏文件都带标签关系，避免逐文件 N+1。
@@ -135,7 +145,7 @@ export const fileService = {
       markFilesAsSynced(files);
       if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
         apiService.auditFileTagRelations()
-          .then((audit) => console.log('[DB_AUDIT] 文件-标签关联健康度', audit))
+          .then(() => { /* console.log('[DB_AUDIT] 文件-标签关联健康度') */ })
           .catch((e) => console.warn('[DB_AUDIT] 关联审计失败', e));
       }
       return files;
@@ -181,7 +191,7 @@ export const fileService = {
       await apiService.ensureDimension(dim);
     }
 
-    console.log('[DB] 种子数据写入完成（10 个文件）');
+    // console.log('[DB] 种子数据写入完成（10 个文件）');
   },
 
   /**
@@ -288,7 +298,7 @@ export const fileService = {
     }
 
     apiService.syncAttributes(fileId, newAttributes)
-      .catch(e => console.warn([DB ] , e));
+      .catch(e => console.warn('[DB]', e));
 
     return updatedFiles;
   },

@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect, Fragment } from 'react';
-import { X, Plus, Network, Tag, Calendar, Building, Briefcase, FileType, CheckCircle2, FileText, FileSpreadsheet, Image, Presentation, File as FileIcon, Trash2 } from 'lucide-react';
+import { X, Plus, Network, Tag, Calendar, Building, Briefcase, FileType, CheckCircle2, FileText, FileSpreadsheet, Image, Presentation, File as FileIcon, Trash2, ExternalLink, Download } from 'lucide-react';
 import type { FileItem } from '../lib/types';
-import { availableDimensions } from '../lib/mock-data';
 import { findPathsForFile } from '../lib/tree';
 
 // Linear style precise tag coloring
@@ -49,12 +48,13 @@ interface InspectorProps {
   selectedFile: FileItem | undefined;
   allFiles: FileItem[];
   dimensionOrder: string[];
+  availableDimensions: string[];
   onUpdateAttributes: (id: string, newAttrs: Record<string, string[]>) => void;
   onDeleteFile: (id: string) => void | Promise<void>;
   onClose: () => void;
 }
 
-export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttributes, onDeleteFile, onClose }: InspectorProps) {
+export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDimensions, onUpdateAttributes, onDeleteFile, onClose }: InspectorProps) {
   const [newTagInput, setNewTagInput] = useState<{ dim: string; val: string }>({ dim: '', val: '' });
   const [showAddDimMenu, setShowAddDimMenu] = useState(false);
   const [forceVisibleDims, setForceVisibleDims] = useState<Set<string>>(new Set());
@@ -330,7 +330,63 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, onUpdateAttr
           </div>
         )}
 
-        <div className="mt-6 border-t border-gray-100 pt-4">
+        <div className="mt-6 border-t border-gray-100 pt-4 flex flex-col gap-2">
+          {(() => {
+            const PREVIEW_SUPPORTED_TYPES = ['pdf', 'docx', 'doc', 'xlsx', 'xls', 'pptx', 'ppt'];
+            const canPreview = selectedFile.url && PREVIEW_SUPPORTED_TYPES.includes(selectedFile.type.toLowerCase());
+            
+            const handlePreview = () => {
+              if (!selectedFile.url) return;
+              const baseUrl = window.location.origin;
+              const fullUrl = selectedFile.url.startsWith('http') ? selectedFile.url : `${baseUrl}${selectedFile.url}`;
+              
+              try {
+                const base64Url = btoa(unescape(encodeURIComponent(fullUrl)));
+                const previewUrl = `https://lolkdoc.tepc.cn/onlinePreview?url=${base64Url}`;
+                window.open(previewUrl, '_blank');
+              } catch (e) {
+                console.error('Failed to encode URL for preview', e);
+                alert('无法生成预览链接，请检查文件名或路径');
+              }
+            };
+
+              const handleDownload = () => {
+                if (!selectedFile.url) return;
+                const baseUrl = window.location.origin;
+                const fullUrl = selectedFile.url.startsWith('http') ? selectedFile.url : `${baseUrl}${selectedFile.url}`;
+                
+                const link = document.createElement('a');
+                link.href = fullUrl;
+                link.download = selectedFile.name || 'download';
+                link.target = '_blank';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+              };
+
+              return (
+                <div className="flex flex-col gap-2 w-full">
+                  {canPreview && (
+                    <button
+                      onClick={handlePreview}
+                      className="flex w-full items-center justify-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-600 transition-colors hover:bg-indigo-100"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      在线预览
+                    </button>
+                  )}
+                  {selectedFile.url && (
+                    <button
+                      onClick={handleDownload}
+                      className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 shadow-sm"
+                    >
+                      <Download className="h-4 w-4" />
+                      下载文件
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
           <button
             onClick={() => onDeleteFile(selectedFile.id)}
             className="flex w-full items-center justify-center gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-100"

@@ -1,16 +1,16 @@
 import React, { useState } from 'react';
 import { GripVertical, FolderTree, Building, Target, FileType, RotateCcw, Settings, ChevronDown } from 'lucide-react';
-import { availableDimensions } from '../lib/mock-data';
 import { cn } from '../lib/utils';
 
 interface SidebarProps {
   dimensionOrder: string[];
   setDimensionOrder: (dimensions: string[]) => void;
+  availableDimensions: string[];
   onReset: () => void;
   onOpenManagement?: () => void;
 }
 
-export function Sidebar({ dimensionOrder, setDimensionOrder, onReset, onOpenManagement }: SidebarProps) {
+export function Sidebar({ dimensionOrder, setDimensionOrder, availableDimensions, onReset, onOpenManagement }: SidebarProps) {
   const [draggedItem, setDraggedItem] = useState<string | null>(null);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const [isLibraryExpanded, setIsLibraryExpanded] = useState(true);

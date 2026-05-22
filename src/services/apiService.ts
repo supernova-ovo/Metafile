@@ -20,10 +20,10 @@ const SECTION_IDS = {
 
 // 使用相对路径走 Vite 代理，避免 CORS 问题
 const API_HANDLER_URL = '/ks/sectionHandler.ashx';
-const API_METRICS_ENABLED = typeof import.meta !== 'undefined' ? !!import.meta.env?.DEV : true;
+const API_METRICS_ENABLED = false;
 const API_METRICS_WINDOW_MS = 5000;
 const API_SLOW_REQUEST_MS = 400;
-const API_PAYLOAD_DEBUG_ENABLED = true;
+const API_PAYLOAD_DEBUG_ENABLED = false;
 
 type ApiMode = 'query' | 'update' | 'remove' | 'other';
 type ApiMetricBucket = { total: number; fail: number; slow: number; duration: number };
@@ -406,6 +406,60 @@ export async function ensureDimension(whmc: string): Promise<string> {
     return sys_id;
   }
   throw new Error(`创建维度失败: ${whmc} (${JSON.stringify(insertResult)})`);
+}
+
+export async function updateDimension(sys_id: string, whmc: string): Promise<boolean> {
+  const result = await apiRequest({
+    id: SECTION_IDS.DIMS,
+    mode: 'update',
+    _p_data: encodeData({ updated: [{ sys_id, WHMC: whmc, WHMS: whmc }] }),
+  });
+  return result.STATUS === 'Success' || result.STATUS === 'OK';
+}
+
+export async function deleteDimensionWithRelations(dimId: string): Promise<boolean> {
+  // 1. 删除维度下的所有标签 (D_WJGL_BQ)
+  const tags = await queryTagsByDim(dimId);
+  if (tags.length > 0) {
+    // 2. 准备要删除的关联文件-标签记录 (D_WJGL_WJBQ)
+    const fileTagsResult = await apiRequest({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'query',
+      where: JSON.stringify({ WHID: dimId }),
+      _pageindex: '1',
+      _pagesize: '10000',
+    });
+    const fileTags = fileTagsResult.ROWS || [];
+    
+    if (fileTags.length > 0) {
+      const removeFileTagsResult = await apiRequest({
+        id: SECTION_IDS.FILE_TAGS,
+        mode: 'update',
+        _p_data: encodeData({ deleted: fileTags.map((r: any) => ({ sys_id: r.sys_id })) }),
+      });
+      if (!(removeFileTagsResult.STATUS === 'Success' || removeFileTagsResult.STATUS === 'OK')) {
+        return false;
+      }
+    }
+
+    const removeTagsResult = await apiRequest({
+      id: SECTION_IDS.TAGS,
+      mode: 'update',
+      _p_data: encodeData({ deleted: tags.map(t => ({ sys_id: t.sys_id })) }),
+    });
+    if (!(removeTagsResult.STATUS === 'Success' || removeTagsResult.STATUS === 'OK')) {
+      return false;
+    }
+  }
+
+  // 3. 删除维度本身 (D_WJGL_WH)
+  const removeDimResult = await apiRequest({
+    id: SECTION_IDS.DIMS,
+    mode: 'update',
+    _p_data: encodeData({ deleted: [{ sys_id: dimId }] }),
+  });
+
+  return removeDimResult.STATUS === 'Success' || removeDimResult.STATUS === 'OK';
 }
 
 // ============================================================

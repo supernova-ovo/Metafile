@@ -4,6 +4,7 @@ export interface FileItem {
   type: string;
   size: number; // in bytes
   updatedAt: string; // ISO string
+  url?: string; // Optional download/preview URL
   attributes: Record<string, string[]>;
 }
 
