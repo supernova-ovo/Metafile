@@ -8,48 +8,7 @@
 
 const SECTION_ID_FILES = '76c22773-66cb-a51c-359b-5a2872169266';
 
-// 使用相对路径走 Vite 代理，避免 CORS 问题
-const API_HANDLER_URL = '/ks/sectionHandler.ashx';
-const UPLOAD_URL = '/ks/editor/upload_json.ashx?dir=file';
-
-/**
- * 获取认证 Token
- */
-function getAuthToken(): string {
-  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_AUTH_TOKEN) {
-    return import.meta.env.VITE_AUTH_TOKEN as string;
-  }
-  return '';
-}
-
-/**
- * 生成 UUID（与 C# 的 Guid.NewGuid() 格式一致）
- */
-export function generateUUID(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16).toUpperCase();
-  });
-}
-
-/**
- * 构建 multipart/form-data 请求体（文本字段）
- */
-function buildFormData(fields: Record<string, string>): { boundary: string; body: string } {
-  const boundary = `----FormBoundary${Date.now()}${Math.random().toString(36).substring(2)}`;
-  const parts: string[] = [];
-
-  for (const [name, value] of Object.entries(fields)) {
-    parts.push(`--${boundary}\r\n`);
-    parts.push(`Content-Disposition: form-data; name="${name}"\r\n\r\n`);
-    parts.push(`${value}\r\n`);
-  }
-
-  parts.push(`--${boundary}--\r\n`);
-
-  return { boundary, body: parts.join('') };
-}
+import { generateUUID, encodeData, apiClient, UPLOAD_URL } from './core/apiClient';
 
 /**
  * 构建 multipart/form-data 请求体（含文件）
@@ -174,29 +133,7 @@ function toFileUploadRecord(
   };
 }
 
-/**
- * 发起请求到 sectionHandler API
- */
-async function apiRequest(formFields: Record<string, string>): Promise<any> {
-  const token = getAuthToken();
-  const { boundary, body } = buildFormData(formFields);
 
-  const response = await fetch(API_HANDLER_URL, {
-    method: 'POST',
-    headers: {
-      'X-JetopDebug-User': token,
-      'Content-Type': `multipart/form-data; boundary=${boundary}`,
-    },
-    body,
-  });
-
-  if (!response.ok) {
-    throw new Error(`HTTP错误: ${response.status} ${response.statusText}`);
-  }
-
-  const text = await response.text();
-  return JSON.parse(text);
-}
 
 /**
  * 将带 URL 的文件记录插入 Jetop 后端
@@ -215,9 +152,9 @@ async function insertFileRecordsToBackend(
       return record;
     });
 
-    const encodedData = btoa(unescape(encodeURIComponent(JSON.stringify({ updated: insertedRecords }))));
+    const encodedData = encodeData({ updated: insertedRecords });
 
-    const result = await apiRequest({
+    const result = await apiClient({
       id: SECTION_ID_FILES,
       mode: 'update',
       _p_data: encodedData,
@@ -321,7 +258,7 @@ export async function uploadFilesWithBackendSync(
  */
 export async function testBackendConnection(): Promise<boolean> {
   try {
-    const result = await apiRequest({
+    const result = await apiClient({
       id: SECTION_ID_FILES,
       mode: 'query',
       _pageindex: '1',

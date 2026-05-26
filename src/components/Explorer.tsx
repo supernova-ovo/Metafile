@@ -1,9 +1,12 @@
 import { ChevronRight, Folder, File as FileIcon, FileText, Image, FileSpreadsheet, Presentation, Search, X, Tag } from 'lucide-react';
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import type { VirtualFolder, ActiveFilter } from '../lib/types';
 import { cn } from '../lib/utils';
 import { getAllFilesInFolder } from '../lib/tree';
-import { Fragment } from 'react';
+import { Fragment, useMemo } from 'react';
+import { useFileStore } from '../store/useFileStore';
+import { selectFilteredFiles } from '../store/selectors';
 
 interface ExplorerProps {
   currentFolder: VirtualFolder;
@@ -37,6 +40,9 @@ export function Explorer({
   setQuickFilter
 }: ExplorerProps) {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const storeState = useFileStore();
 
   // normal view data
   const folders = Object.values(currentFolder.subFolders);
@@ -45,62 +51,38 @@ export function Explorer({
 
   // omni search and filter logic
   const isSearchMode = searchQuery.trim().length > 0 || activeFilters.length > 0 || quickFilter !== 'all';
-  const allFolderFiles = getAllFilesInFolder(currentFolder);
+  
+  const allFolderFiles = useMemo(() => getAllFilesInFolder(currentFolder), [currentFolder]);
 
-  // Suggestions map
-  const attributeMap = new Map<string, Set<string>>();
-  allFolderFiles.forEach(f => {
-    Object.entries(f.attributes).forEach(([dim, vals]) => {
-      if (!attributeMap.has(dim)) attributeMap.set(dim, new Set());
-      vals.forEach(v => attributeMap.get(dim)!.add(v));
+  // Suggestions map optimized with useMemo
+  const suggestions = useMemo(() => {
+    if (searchQuery.trim().length === 0) return [];
+    
+    const attributeMap = new Map<string, Set<string>>();
+    allFolderFiles.forEach(f => {
+      Object.entries(f.attributes).forEach(([dim, vals]) => {
+        if (!attributeMap.has(dim)) attributeMap.set(dim, new Set());
+        vals.forEach(v => attributeMap.get(dim)!.add(v));
+      });
     });
-  });
 
-  const suggestions: ActiveFilter[] = [];
-  if (searchQuery.trim().length > 0) {
+    const result: ActiveFilter[] = [];
     const query = searchQuery.toLowerCase();
     attributeMap.forEach((vals, dim) => {
       vals.forEach(v => {
         if (v.toLowerCase().includes(query) || dim.toLowerCase().includes(query)) {
-          suggestions.push({ dimension: dim, value: v });
+          result.push({ dimension: dim, value: v });
         }
       });
     });
-  }
+    return result;
+  }, [allFolderFiles, searchQuery]);
 
-  // File filtering
-  let displayFiles = files; // Default to path leaf files
-  if (isSearchMode) {
-    let tempFiles = allFolderFiles;
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      tempFiles = tempFiles.filter(f => f.name.toLowerCase().includes(q));
-    }
-
-    if (activeFilters.length > 0) {
-      tempFiles = tempFiles.filter(f => {
-        return activeFilters.every(af => {
-          const fileVals = f.attributes[af.dimension];
-          return fileVals && fileVals.includes(af.value);
-        });
-      });
-    }
-
-    if (quickFilter === 'recent') {
-      const now = new Date();
-      tempFiles = tempFiles.filter(f => {
-         const fd = new Date(f.updatedAt);
-         return (now.getTime() - fd.getTime()) < 7 * 24 * 60 * 60 * 1000;
-      });
-    } else if (quickFilter === 'uncategorized') {
-      tempFiles = tempFiles.filter(f => Object.keys(f.attributes).every(k => k === '文件类型' || f.attributes[k].length === 0));
-    } else if (quickFilter === 'large') {
-      tempFiles = tempFiles.filter(f => f.size > 5 * 1024 * 1024);
-    }
-
-    displayFiles = tempFiles;
-  }
+  // File filtering optimized with useMemo and selectors
+  const displayFiles = useMemo(() => {
+    if (!isSearchMode) return files;
+    return selectFilteredFiles(storeState, allFolderFiles, searchQuery, activeFilters, quickFilter);
+  }, [storeState, allFolderFiles, files, isSearchMode, searchQuery, activeFilters, quickFilter]);
 
   const getIconForType = (type: string) => {
     switch (type) {
@@ -329,6 +311,11 @@ export function Explorer({
                     <tr 
                       key={file.id} 
                       onClick={() => onSelectFile(file.id)}
+                      onDoubleClick={() => {
+                        const nextParams = new URLSearchParams(searchParams);
+                        nextParams.set('preview', file.id);
+                        setSearchParams(nextParams);
+                      }}
                       className={cn(
                         "hover:bg-accent cursor-pointer transition-colors",
                         selectedFileId === file.id ? "bg-indigo-50/50 hover:bg-indigo-50" : ""

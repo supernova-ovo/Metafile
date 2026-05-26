@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, Fragment } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { X, Plus, Network, Tag, Calendar, Building, Briefcase, FileType, CheckCircle2, FileText, FileSpreadsheet, Image, Presentation, File as FileIcon, Trash2, ExternalLink, Download } from 'lucide-react';
 import type { FileItem } from '../lib/types';
 import { findPathsForFile } from '../lib/tree';
@@ -58,6 +59,7 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
   const [newTagInput, setNewTagInput] = useState<{ dim: string; val: string }>({ dim: '', val: '' });
   const [showAddDimMenu, setShowAddDimMenu] = useState(false);
   const [forceVisibleDims, setForceVisibleDims] = useState<Set<string>>(new Set());
+  const [searchParams, setSearchParams] = useSearchParams();
   
   const inputRef = useRef<HTMLInputElement>(null);
   const isSubmittingRef = useRef(false);
@@ -337,17 +339,9 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
             
             const handlePreview = () => {
               if (!selectedFile.url) return;
-              const baseUrl = window.location.origin;
-              const fullUrl = selectedFile.url.startsWith('http') ? selectedFile.url : `${baseUrl}${selectedFile.url}`;
-              
-              try {
-                const base64Url = btoa(unescape(encodeURIComponent(fullUrl)));
-                const previewUrl = `https://lolkdoc.tepc.cn/onlinePreview?url=${base64Url}`;
-                window.open(previewUrl, '_blank');
-              } catch (e) {
-                console.error('Failed to encode URL for preview', e);
-                alert('无法生成预览链接，请检查文件名或路径');
-              }
+              const nextParams = new URLSearchParams(searchParams);
+              nextParams.set('preview', selectedFile.id);
+              setSearchParams(nextParams);
             };
 
               const handleDownload = () => {

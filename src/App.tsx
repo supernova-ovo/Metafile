@@ -1,14 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { Explorer } from './components/Explorer';
 import { Inspector } from './components/Inspector';
 import { DeleteFileModal } from './components/DeleteFileModal';
 import { StatusToast } from './components/StatusToast';
 import { UploadModal } from './components/UploadModal';
-import { uploadFilesWithBackendSync } from './services/jetopApiService';
 import { Management } from './components/Management';
 import { UploadCloud } from 'lucide-react';
-import { buildTree } from './lib/tree';
 import { buildAvailableTagValues } from './lib/mock-data';
 import type { FileItem, ActiveFilter } from './lib/types';
 import { fileService } from './services/fileService';
@@ -16,10 +15,24 @@ import { preferenceService } from './services/preferenceService';
 import * as apiService from './services/apiService';
 import type { DimRow } from './services/apiService';
 import { availableDimensions as mockAvailableDimensions } from './lib/mock-data';
+import { useFileStore } from './store/useFileStore';
+import { selectVirtualTree } from './store/selectors';
+import { ErrorBoundary } from './components/core/ErrorBoundary';
+import { JobQueueOverlay } from './components/core/JobQueueOverlay';
+import { PreviewModal } from './components/core/PreviewModal';
+import { useJobStore } from './store/useJobStore';
+import { jobQueue } from './services/jobQueue';
 
 function App() {
-  // 先用 LocalStorage 缓存数据初始化（同步，用于立即渲染）
-  const [files, setFiles] = useState<FileItem[]>(() => fileService.getFiles());
+  const storeFiles = useFileStore(state => state.files);
+  const files = Object.values(storeFiles);
+  const setFiles = useFileStore(state => state.setFiles);
+  const addFiles = useFileStore(state => state.addFiles);
+  const updateFileAttributes = useFileStore(state => state.updateFileAttributes);
+  const deleteFile = useFileStore(state => state.deleteFile);
+  const resetFilesAction = useFileStore(state => state.resetFiles);
+  const hydrateFileAttributes = useFileStore(state => state.hydrateFileAttributes);
+
   const [dimensionOrder, setDimensionOrder] = useState<string[]>(() => preferenceService.getDimensionOrder());
   const [currentPath, setCurrentPath] = useState<string[]>(() => preferenceService.getCurrentPath());
   const [selectedFileId, setSelectedFileId] = useState<string | null>(() => preferenceService.getSelectedFileId());
@@ -42,13 +55,12 @@ function App() {
   const [viewMode, setViewMode] = useState<'explorer' | 'management'>('explorer');
   
   // Search and Filter states
+  const [searchParams, setSearchParams] = useSearchParams();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [quickFilter, setQuickFilter] = useState("all");
   const isBootstrappingRef = useRef(true);
   const hasInitRunRef = useRef(false);
-  const skipNextDbSyncRef = useRef(false);
-  const isHydratingAttrsRef = useRef(false);
 
   // 启动时异步从数据库初始化（自动写入种子数据）
   useEffect(() => {
@@ -138,21 +150,8 @@ function App() {
     setSelectedFileId(null);
   }, [searchQuery, activeFilters, quickFilter]);
 
-  // Sync to LocalStorage + 异步同步到数据库
-  useEffect(() => {
-    if (isBootstrappingRef.current) return;
-    if (skipNextDbSyncRef.current) {
-      fileService.saveFiles(files, { skipDbSync: true });
-      skipNextDbSyncRef.current = false;
-      return;
-    }
-    if (isHydratingAttrsRef.current) {
-      fileService.saveFiles(files, { skipDbSync: true });
-      isHydratingAttrsRef.current = false;
-      return;
-    }
-    fileService.saveFiles(files);
-  }, [files]);
+  // Skip local sync effect since Zustand store actions already handle it.
+  // We keep the skip flag logic for things that bypass the store DB sync.
 
   useEffect(() => {
     if (isBootstrappingRef.current) return;
@@ -160,18 +159,14 @@ function App() {
     let cancelled = false;
 
     void (async () => {
-      const next = await fileService.hydrateFileAttributes(files, selectedFileId);
       if (cancelled) return;
-      if (next !== files) {
-        isHydratingAttrsRef.current = true;
-        setFiles(next);
-      }
+      await hydrateFileAttributes(selectedFileId);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [selectedFileId, files]);
+  }, [selectedFileId, hydrateFileAttributes]);
 
   useEffect(() => {
     if (isBootstrappingRef.current) return;
@@ -197,14 +192,14 @@ function App() {
   const handleResetSystem = async () => {
     if (window.confirm('确定要重置整个文件系统并清空所有上传与修改的数据吗？')) {
       const resetPrefs = await preferenceService.resetPreferences();
-      setFiles(fileService.resetFiles());
+      resetFilesAction();
       setDimensionOrder(resetPrefs.dimensionOrder);
       setCurrentPath(resetPrefs.currentPath);
       setSelectedFileId(resetPrefs.selectedFileId);
     }
   };
 
-  const rootFolder = buildTree(files, dimensionOrder);
+  const rootFolder = selectVirtualTree(useFileStore.getState(), dimensionOrder);
 
   // 构建当前文件夹
   // 修复：不再因"目录变空"就跳回根目录。
@@ -232,7 +227,7 @@ function App() {
   }, [validPathString, currentPathString]);
 
   const handleUpdateAttributes = (fileId: string, newAttrs: Record<string, string[]>) => {
-    setFiles(prev => fileService.updateAttributes(prev, fileId, newAttrs));
+    updateFileAttributes(fileId, newAttrs);
   };
 
   const handleDeleteFile = async (fileId: string) => {
@@ -246,7 +241,7 @@ function App() {
     try {
       setIsDeletingFile(true);
       await fileService.deleteFile(pendingDeleteFileId);
-      setFiles(prev => prev.filter(file => file.id !== pendingDeleteFileId));
+      deleteFile(pendingDeleteFileId);
       if (selectedFileId === pendingDeleteFileId) {
         setSelectedFileId(null);
       }
@@ -260,9 +255,8 @@ function App() {
     }
   };
 
-  const handleFilesChangeWithoutSync = (updater: React.SetStateAction<FileItem[]>) => {
-    skipNextDbSyncRef.current = true;
-    setFiles(updater);
+  const handleFilesChangeWithoutSync = (nextFiles: FileItem[]) => {
+    setFiles(nextFiles, true);
   };
 
   const handleNavigatePath = (index: number) => {
@@ -280,36 +274,37 @@ function App() {
   };
 
   const handleUploadConfirm = async (finalFiles: FileItem[]) => {
-    // 上传流程会单独调用 uploadFilesWithBackendSync 写主表，避免重复触发自动全量写库。
-    skipNextDbSyncRef.current = pendingBrowserFiles.length > 0;
-    setFiles(prev => [...prev, ...finalFiles]);
+    // Add to FileStore immediately (optimistic update)
+    addFiles(finalFiles);
     setUploadModalFiles([]);
 
-    // 完整流程：上传文件到 upload_json.ashx → 获取公网URL → 保存元数据（含Url）到后端
     if (pendingBrowserFiles.length > 0) {
-      // console.log('🚀 开始完整上传流程...');
-      const result = await uploadFilesWithBackendSync(pendingBrowserFiles, finalFiles);
-      if (result.success) {
-        await fileService.syncUploadedAttributes(finalFiles);
-        // console.log('✅ 上传完成:', result.message);
-        setToast({
-          title: '上传成功',
-          message: result.message,
-          tone: 'success',
-        });
-      } else {
-        console.warn('⚠️ 上传结果:', result.message);
-        setToast({
-          title: '上传未完成',
-          message: result.message,
-          tone: 'error',
-        });
-      }
-      result.fileResults.forEach(r => {
-        if (r.url) {
-          // console.log(`  📎 ${r.fileName} → ${r.url}`);
-        }
+      // Create jobs
+      const jobs = pendingBrowserFiles.map((file, index) => {
+        const meta = finalFiles[index];
+        return {
+          id: meta.id,
+          file,
+          meta,
+          status: 'pending' as const,
+          progress: 0,
+        };
       });
+
+      // Push to JobStore
+      useJobStore.getState().addJobs(jobs);
+
+      // Start jobs asynchronously (non-blocking)
+      jobs.forEach(job => {
+        jobQueue.startJob(job.id);
+      });
+
+      setToast({
+        title: '已加入上传队列',
+        message: `共有 ${jobs.length} 个文件正在后台上传并同步...`,
+        tone: 'success',
+      });
+      
       setPendingBrowserFiles([]);
     }
   };
@@ -378,6 +373,19 @@ function App() {
         </div>
       )}
 
+      {searchParams.get('preview') && (
+        <PreviewModal 
+          fileId={searchParams.get('preview')!} 
+          onClose={() => {
+            const nextParams = new URLSearchParams(searchParams);
+            nextParams.delete('preview');
+            setSearchParams(nextParams);
+          }} 
+        />
+      )}
+
+      <JobQueueOverlay />
+
       {viewMode === 'explorer' ? (
         <>
           <Sidebar 
@@ -387,30 +395,34 @@ function App() {
             onReset={handleResetSystem}
             onOpenManagement={() => setViewMode('management')}
           />
-          <Explorer 
-            currentFolder={currentFolder} 
-            currentPath={currentPath}
-            dimensionOrder={dimensionOrder}
-            navigatePath={handleNavigatePath}
-            enterFolder={handleEnterFolder}
-            selectedFileId={selectedFileId}
-            onSelectFile={setSelectedFileId}
-            searchQuery={searchQuery}
-            setSearchQuery={setSearchQuery}
-            activeFilters={activeFilters}
-            setActiveFilters={setActiveFilters}
-            quickFilter={quickFilter}
-            setQuickFilter={setQuickFilter}
-          />
-          <Inspector 
-            selectedFile={selectedFile}
-            allFiles={files}
-            dimensionOrder={dimensionOrder}
-            availableDimensions={availableDimensions}
-            onUpdateAttributes={handleUpdateAttributes}
-            onDeleteFile={handleDeleteFile}
-            onClose={() => setSelectedFileId(null)}
-          />
+          <ErrorBoundary>
+            <Explorer 
+              currentFolder={currentFolder} 
+              currentPath={currentPath}
+              dimensionOrder={dimensionOrder}
+              navigatePath={handleNavigatePath}
+              enterFolder={handleEnterFolder}
+              selectedFileId={selectedFileId}
+              onSelectFile={setSelectedFileId}
+              searchQuery={searchQuery}
+              setSearchQuery={setSearchQuery}
+              activeFilters={activeFilters}
+              setActiveFilters={setActiveFilters}
+              quickFilter={quickFilter}
+              setQuickFilter={setQuickFilter}
+            />
+          </ErrorBoundary>
+          <ErrorBoundary>
+            <Inspector 
+              selectedFile={selectedFile}
+              allFiles={files}
+              dimensionOrder={dimensionOrder}
+              availableDimensions={availableDimensions}
+              onUpdateAttributes={handleUpdateAttributes}
+              onDeleteFile={handleDeleteFile}
+              onClose={() => setSelectedFileId(null)}
+            />
+          </ErrorBoundary>
         </>
       ) : (
         <Management 

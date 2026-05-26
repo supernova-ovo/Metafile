@@ -10,6 +10,8 @@
  *   D_WJGL_YHPH (用户偏好)   → 383be00c-b492-3ce0-373a-43b6a3bedaad
  */
 
+import { generateUUID, encodeData, apiClient } from './core/apiClient';
+
 const SECTION_IDS = {
   FILES: '76c22773-66cb-a51c-359b-5a2872169266',
   DIMS: 'e7816f94-4a74-79b9-b7c6-c6aebe9f857b',
@@ -18,223 +20,7 @@ const SECTION_IDS = {
   PREFERENCES: '383be00c-b492-3ce0-373a-43b6a3bedaad',
 } as const;
 
-// 使用相对路径走 Vite 代理，避免 CORS 问题
-const API_HANDLER_URL = '/ks/sectionHandler.ashx';
-const API_METRICS_ENABLED = false;
-const API_METRICS_WINDOW_MS = 5000;
-const API_SLOW_REQUEST_MS = 400;
-const API_PAYLOAD_DEBUG_ENABLED = false;
-
-type ApiMode = 'query' | 'update' | 'remove' | 'other';
-type ApiMetricBucket = { total: number; fail: number; slow: number; duration: number };
-
-const metricsState = {
-  timer: null as ReturnType<typeof setTimeout> | null,
-  startedAt: 0,
-  total: 0,
-  fail: 0,
-  slow: 0,
-  mode: new Map<ApiMode, number>(),
-  section: new Map<string, ApiMetricBucket>(),
-};
-
-function compactId(id?: string): string {
-  if (!id) return 'unknown';
-  return `${id.slice(0, 6)}...${id.slice(-4)}`;
-}
-
-function normalizeMode(mode?: string): ApiMode {
-  if (mode === 'query' || mode === 'update' || mode === 'remove') return mode;
-  return 'other';
-}
-
-function resetMetricsWindow() {
-  metricsState.startedAt = Date.now();
-  metricsState.total = 0;
-  metricsState.fail = 0;
-  metricsState.slow = 0;
-  metricsState.mode.clear();
-  metricsState.section.clear();
-}
-
-function flushApiMetrics() {
-  metricsState.timer = null;
-  if (metricsState.total === 0) return;
-
-  const elapsedSec = Math.max(1, Math.round((Date.now() - metricsState.startedAt) / 1000));
-  const q = metricsState.mode.get('query') || 0;
-  const u = metricsState.mode.get('update') || 0;
-  const r = metricsState.mode.get('remove') || 0;
-  const topSections = [...metricsState.section.entries()]
-    .sort((a, b) => b[1].total - a[1].total)
-    .slice(0, 3)
-    .map(([id, m]) => `${compactId(id)}:${m.total}${m.fail > 0 ? `!${m.fail}` : ''}`)
-    .join(', ');
-
-  console.log(
-    `[API_METRICS ${elapsedSec}s] total=${metricsState.total} query=${q} update=${u} remove=${r} fail=${metricsState.fail} slow>${API_SLOW_REQUEST_MS}ms=${metricsState.slow} top=[${topSections}]`
-  );
-  resetMetricsWindow();
-}
-
-function recordApiMetric(formFields: Record<string, string>, durationMs: number, failed: boolean) {
-  if (!API_METRICS_ENABLED) return;
-  if (!metricsState.startedAt) resetMetricsWindow();
-
-  const mode = normalizeMode(formFields.mode);
-  const id = formFields.id || 'unknown';
-
-  metricsState.total += 1;
-  if (failed) metricsState.fail += 1;
-  if (durationMs >= API_SLOW_REQUEST_MS) metricsState.slow += 1;
-  metricsState.mode.set(mode, (metricsState.mode.get(mode) || 0) + 1);
-
-  const bucket = metricsState.section.get(id) || { total: 0, fail: 0, slow: 0, duration: 0 };
-  bucket.total += 1;
-  if (failed) bucket.fail += 1;
-  if (durationMs >= API_SLOW_REQUEST_MS) bucket.slow += 1;
-  bucket.duration += durationMs;
-  metricsState.section.set(id, bucket);
-
-  if (!metricsState.timer) {
-    metricsState.timer = setTimeout(flushApiMetrics, API_METRICS_WINDOW_MS);
-  }
-}
-
-function safeDecodePayload(data?: string): any {
-  if (!data) return undefined;
-  try {
-    return JSON.parse(decodeURIComponent(escape(atob(data))));
-  } catch {
-    return '[decode_failed]';
-  }
-}
-
-function logApiPayload(formFields: Record<string, string>) {
-  if (!API_PAYLOAD_DEBUG_ENABLED) return;
-  if (formFields.mode === 'query') return;
-  const rawData = safeDecodePayload((formFields._p_data ?? formFields.data));
-  const payloadPreview = {
-    id: formFields.id,
-    mode: formFields.mode,
-    where: formFields.where,
-    _pageindex: formFields._pageindex,
-    _pagesize: formFields._pagesize,
-    rawData,
-  };
-  console.groupCollapsed(`[API_PAYLOAD] ${formFields.mode} id=${formFields.id}`);
-  console.dir(payloadPreview, { depth: null });
-  console.groupEnd();
-}
-
-// ============================================================
-// 内部工具函数（与 jetopApiService 保持一致）
-// ============================================================
-
-export function generateUUID(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16).toUpperCase();
-  });
-}
-
-function getAuthToken(): string {
-  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_AUTH_TOKEN) {
-    return import.meta.env.VITE_AUTH_TOKEN as string;
-  }
-  return '';
-}
-
-function buildFormData(fields: Record<string, string>): { boundary: string; body: string } {
-  const boundary = `----FormBoundary${Date.now()}${Math.random().toString(36).substring(2)}`;
-  const parts: string[] = [];
-  for (const [name, value] of Object.entries(fields)) {
-    parts.push(`--${boundary}\r\n`);
-    parts.push(`Content-Disposition: form-data; name="${name}"\r\n\r\n`);
-    parts.push(`${value}\r\n`);
-  }
-  parts.push(`--${boundary}--\r\n`);
-  return { boundary, body: parts.join('') };
-}
-
-/**
- * 直接发送表单字段到 sectionHandler（与 jetopApiService 一致）
- * 查询参数（_pageindex, _pagesize, where）作为顶级表单字段
- * 插入/更新/删除数据放在 'data' 字段（Base64 编码）
- */
-async function apiRequest(formFields: Record<string, string>): Promise<any> {
-  const start = performance.now();
-  logApiPayload(formFields);
-  const token = getAuthToken();
-
-  const processedFields = { ...formFields };
-  
-  if (processedFields.where) {
-    try {
-      const whereObj = JSON.parse(processedFields.where);
-      delete processedFields.where;
-      for (const key of Object.keys(whereObj)) {
-        processedFields[`_p_${key}`] = String(whereObj[key]);
-      }
-    } catch (e) {
-      console.warn('[API] 解析 where 参数失败', e);
-    }
-  }
-
-  const { boundary, body } = buildFormData(processedFields);
-
-  try {
-    const response = await fetch(API_HANDLER_URL, {
-      method: 'POST',
-      headers: {
-        'X-JetopDebug-User': token,
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-      },
-      body,
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP错误: ${response.status} ${response.statusText}`);
-    }
-
-    const text = await response.text();
-    let parsed: any;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      // 后端返回了非 JSON 内容（如 SQL 错误明文），直接报错
-      console.error('[API_RESPONSE_NOT_JSON]', { mode: formFields.mode, id: formFields.id, rawText: text });
-      throw new Error(`后端返回非JSON响应: ${text}`);
-    }
-    const mode = formFields.mode;
-    const isMutation = mode === 'update' || mode === 'remove';
-    const status = parsed?.STATUS;
-    if (isMutation && !(status === 'Success' || status === 'OK')) {
-      console.error('[API_MUTATION_FAILED]', {
-        id: formFields.id,
-        mode,
-        status,
-        message: parsed?.MSG || parsed?.MESSAGE || parsed?.message,
-        response: parsed,
-      });
-      recordApiMetric(formFields, performance.now() - start, true);
-      throw new Error(`后端写入失败: ${status || 'UNKNOWN'} ${parsed?.MSG || parsed?.MESSAGE || ''}`.trim());
-    }
-    recordApiMetric(formFields, performance.now() - start, false);
-    return parsed;
-  } catch (error) {
-    recordApiMetric(formFields, performance.now() - start, true);
-    throw error;
-  }
-}
-
-/**
- * Base64 编码数据（用于 insert/update/remove 的 payload）
- */
-function encodeData(obj: any): string {
-  return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
-}
+export { generateUUID };
 
 // ============================================================
 // 类型定义
@@ -304,7 +90,7 @@ function buildTagKey(dimId: string, tagValue: string): string {
 // ============================================================
 
 export async function queryFiles(page = 1, pageSize = 200): Promise<{ ROWS: FileRow[]; TOTAL: number }> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.FILES,
     mode: 'query',
     _pageindex: String(page),
@@ -314,7 +100,7 @@ export async function queryFiles(page = 1, pageSize = 200): Promise<{ ROWS: File
 }
 
 export async function insertFileRecord(record: FileRow): Promise<boolean> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.FILES,
     mode: 'update',
     _p_data: encodeData({ updated: [record] }),
@@ -323,7 +109,7 @@ export async function insertFileRecord(record: FileRow): Promise<boolean> {
 }
 
 export async function insertFileRecords(records: FileRow[]): Promise<boolean> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.FILES,
     mode: 'update',
     _p_data: encodeData({ updated: records }),
@@ -332,7 +118,7 @@ export async function insertFileRecords(records: FileRow[]): Promise<boolean> {
 }
 
 export async function updateFileRecord(sys_id: string, fields: Partial<FileRow>): Promise<boolean> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.FILES,
     mode: 'update',
     _p_data: encodeData({ updated: [{ sys_id, ...fields }] }),
@@ -341,7 +127,7 @@ export async function updateFileRecord(sys_id: string, fields: Partial<FileRow>)
 }
 
 export async function deleteFileRecord(sys_id: string): Promise<boolean> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.FILES,
     mode: 'update',
     _p_data: encodeData({ deleted: [{ sys_id }] }),
@@ -354,7 +140,7 @@ export async function deleteFileRecord(sys_id: string): Promise<boolean> {
 // ============================================================
 
 export async function queryAllDimensions(): Promise<DimRow[]> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.DIMS,
     mode: 'query',
     _pageindex: '1',
@@ -365,7 +151,7 @@ export async function queryAllDimensions(): Promise<DimRow[]> {
 
 export async function ensureDimension(whmc: string): Promise<string> {
   // 先查询是否存在
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.DIMS,
     mode: 'query',
     where: JSON.stringify({ WHMC: whmc }),
@@ -381,7 +167,7 @@ export async function ensureDimension(whmc: string): Promise<string> {
   // 不存在则创建（补全所有 NOT NULL 字段）
   const now = new Date().toISOString();
   const sys_id = generateUUID();
-  const insertResult = await apiRequest({
+  const insertResult = await apiClient({
     id: SECTION_IDS.DIMS,
     mode: 'update',
     _p_data: encodeData({
@@ -409,7 +195,7 @@ export async function ensureDimension(whmc: string): Promise<string> {
 }
 
 export async function updateDimension(sys_id: string, whmc: string): Promise<boolean> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.DIMS,
     mode: 'update',
     _p_data: encodeData({ updated: [{ sys_id, WHMC: whmc, WHMS: whmc }] }),
@@ -422,7 +208,7 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
   const tags = await queryTagsByDim(dimId);
   if (tags.length > 0) {
     // 2. 准备要删除的关联文件-标签记录 (D_WJGL_WJBQ)
-    const fileTagsResult = await apiRequest({
+    const fileTagsResult = await apiClient({
       id: SECTION_IDS.FILE_TAGS,
       mode: 'query',
       where: JSON.stringify({ WHID: dimId }),
@@ -432,7 +218,7 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
     const fileTags = fileTagsResult.ROWS || [];
     
     if (fileTags.length > 0) {
-      const removeFileTagsResult = await apiRequest({
+      const removeFileTagsResult = await apiClient({
         id: SECTION_IDS.FILE_TAGS,
         mode: 'update',
         _p_data: encodeData({ deleted: fileTags.map((r: any) => ({ sys_id: r.sys_id })) }),
@@ -442,7 +228,7 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
       }
     }
 
-    const removeTagsResult = await apiRequest({
+    const removeTagsResult = await apiClient({
       id: SECTION_IDS.TAGS,
       mode: 'update',
       _p_data: encodeData({ deleted: tags.map(t => ({ sys_id: t.sys_id })) }),
@@ -453,7 +239,7 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
   }
 
   // 3. 删除维度本身 (D_WJGL_WH)
-  const removeDimResult = await apiRequest({
+  const removeDimResult = await apiClient({
     id: SECTION_IDS.DIMS,
     mode: 'update',
     _p_data: encodeData({ deleted: [{ sys_id: dimId }] }),
@@ -467,7 +253,7 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
 // ============================================================
 
 export async function queryTagsByDim(dimId: string): Promise<TagRow[]> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.TAGS,
     mode: 'query',
     where: JSON.stringify({ WHID: dimId }),
@@ -479,7 +265,7 @@ export async function queryTagsByDim(dimId: string): Promise<TagRow[]> {
 
 export async function ensureTag(whid: string, bqz: string): Promise<string> {
   // 先查询同维度下是否存在同名标签
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.TAGS,
     mode: 'query',
     where: JSON.stringify({ WHID: whid, BQZ: bqz }),
@@ -495,7 +281,7 @@ export async function ensureTag(whid: string, bqz: string): Promise<string> {
   // 不存在则创建（补全所有 NOT NULL 字段）
   const now = new Date().toISOString();
   const sys_id = generateUUID();
-  const insertResult = await apiRequest({
+  const insertResult = await apiClient({
     id: SECTION_IDS.TAGS,
     mode: 'update',
     _p_data: encodeData({
@@ -529,7 +315,7 @@ export async function queryAllTags(): Promise<(TagRow & { WHMC?: string })[]> {
   const dims = await queryAllDimensions();
   const dimMap = new Map(dims.map(d => [d.sys_id!, d.WHMC]));
 
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.TAGS,
     mode: 'query',
     _pageindex: '1',
@@ -548,7 +334,7 @@ export async function queryAllTags(): Promise<(TagRow & { WHMC?: string })[]> {
 // ============================================================
 
 export async function queryFileTags(fileId: string): Promise<FileTagRow[]> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.FILE_TAGS,
     mode: 'query',
     where: JSON.stringify({ WJID: fileId }),
@@ -562,7 +348,7 @@ export async function removeAllFileTags(fileId: string): Promise<boolean> {
   const rows = await queryFileTags(fileId);
   if (rows.length === 0) return true;
 
-  const removeResult = await apiRequest({
+  const removeResult = await apiClient({
     id: SECTION_IDS.FILE_TAGS,
     mode: 'update',
     _p_data: encodeData({
@@ -601,7 +387,7 @@ export async function deleteFileWithRelations(fileId: string): Promise<boolean> 
 const DEFAULT_USER_ID = 'metafile-default-user';
 
 export async function getPreference(): Promise<PrefRow | null> {
-  const result = await apiRequest({
+  const result = await apiClient({
     id: SECTION_IDS.PREFERENCES,
     mode: 'query',
     where: JSON.stringify({ YHID: DEFAULT_USER_ID }),
@@ -626,14 +412,14 @@ export async function upsertPreference(prefs: {
   if (prefs.selectedFileId !== undefined) fields.XZWJID = prefs.selectedFileId || null;
 
   if (existing) {
-    const result = await apiRequest({
+    const result = await apiClient({
       id: SECTION_IDS.PREFERENCES,
       mode: 'update',
       _p_data: encodeData({ updated: [{ sys_id: existing.sys_id, ...fields }] }),
     });
     return result.STATUS === 'Success' || result.STATUS === 'OK';
   } else {
-    const result = await apiRequest({
+    const result = await apiClient({
       id: SECTION_IDS.PREFERENCES,
       mode: 'update',
       _p_data: encodeData({
@@ -705,7 +491,7 @@ async function _syncAttributesInner(
   // 没有目标属性时，直接清理所有旧关联（1 次 remove）
   if (normalizedTargets.length === 0) {
     if (existingAssocs.length > 0) {
-      await apiRequest({
+      await apiClient({
         id: SECTION_IDS.FILE_TAGS,
         mode: 'update',
         _p_data: encodeData({
@@ -744,7 +530,7 @@ async function _syncAttributesInner(
       sys_epsid: generateUUID(),
     }));
 
-    const createDimResult = await apiRequest({
+    const createDimResult = await apiClient({
       id: SECTION_IDS.DIMS,
       mode: 'update',
       _p_data: encodeData({ updated: createdDims }),
@@ -794,7 +580,7 @@ async function _syncAttributesInner(
       sys_batchid: generateUUID(),
       sys_epsid: generateUUID(),
     }));
-    const createTagResult = await apiRequest({
+    const createTagResult = await apiClient({
       id: SECTION_IDS.TAGS,
       mode: 'update',
       _p_data: encodeData({ updated: createdTags }),
@@ -838,7 +624,7 @@ async function _syncAttributesInner(
     }));
 
   if (toCreateAssocs.length > 0) {
-    const createAssocResult = await apiRequest({
+    const createAssocResult = await apiClient({
       id: SECTION_IDS.FILE_TAGS,
       mode: 'update',
       _p_data: encodeData({ updated: toCreateAssocs }),
@@ -853,7 +639,7 @@ async function _syncAttributesInner(
     .filter((assoc) => !targetTagIdSet.has(assoc.BQID))
     .map((assoc) => ({ sys_id: assoc.sys_id }));
   if (toDeleteAssocs.length > 0) {
-    const removeAssocResult = await apiRequest({
+    const removeAssocResult = await apiClient({
       id: SECTION_IDS.FILE_TAGS,
       mode: 'update',
       _p_data: encodeData({ deleted: toDeleteAssocs }),
@@ -876,7 +662,7 @@ export async function loadFileAttributes(fileId: string): Promise<Record<string,
 
   // 查询维度名称
   const dimPromises = dimIds.map(async (did) => {
-    const result = await apiRequest({
+    const result = await apiClient({
       id: SECTION_IDS.DIMS,
       mode: 'query',
       where: JSON.stringify({ sys_id: did }),
@@ -893,7 +679,7 @@ export async function loadFileAttributes(fileId: string): Promise<Record<string,
 
   // 查询标签值
   const tagPromises = tagIds.map(async (tid) => {
-    const result = await apiRequest({
+    const result = await apiClient({
       id: SECTION_IDS.TAGS,
       mode: 'query',
       where: JSON.stringify({ sys_id: tid }),
@@ -925,9 +711,9 @@ export async function loadFileAttributes(fileId: string): Promise<Record<string,
 
 export async function loadAllFileAttributes(): Promise<Record<string, Record<string, string[]>>> {
   const [assocsR, dimsR, tagsR] = await Promise.all([
-    apiRequest({ id: SECTION_IDS.FILE_TAGS, mode: 'query', _pageindex: '1', _pagesize: '10000' }),
-    apiRequest({ id: SECTION_IDS.DIMS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
-    apiRequest({ id: SECTION_IDS.TAGS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
+    apiClient({ id: SECTION_IDS.FILE_TAGS, mode: 'query', _pageindex: '1', _pagesize: '10000' }),
+    apiClient({ id: SECTION_IDS.DIMS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
+    apiClient({ id: SECTION_IDS.TAGS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
   ]);
 
   const assocs = assocsR.ROWS || [];
@@ -978,10 +764,10 @@ export async function auditFileTagRelations(): Promise<{
   badDimRef: number;
 }> {
   const [filesR, tagsR, assocsR, dimsR] = await Promise.all([
-    apiRequest({ id: SECTION_IDS.FILES, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
-    apiRequest({ id: SECTION_IDS.TAGS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
-    apiRequest({ id: SECTION_IDS.FILE_TAGS, mode: 'query', _pageindex: '1', _pagesize: '10000' }),
-    apiRequest({ id: SECTION_IDS.DIMS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
+    apiClient({ id: SECTION_IDS.FILES, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
+    apiClient({ id: SECTION_IDS.TAGS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
+    apiClient({ id: SECTION_IDS.FILE_TAGS, mode: 'query', _pageindex: '1', _pagesize: '10000' }),
+    apiClient({ id: SECTION_IDS.DIMS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
   ]);
 
   const files = filesR.ROWS || [];

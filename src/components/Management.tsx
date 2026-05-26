@@ -6,8 +6,8 @@ import { ensureDimension, updateDimension, deleteDimensionWithRelations } from '
 
 interface ManagementProps {
   files: FileItem[];
-  setFiles: React.Dispatch<React.SetStateAction<FileItem[]>>;
-  onFilesChangeWithoutSync?: (updater: React.SetStateAction<FileItem[]>) => void;
+  setFiles: (files: FileItem[]) => void;
+  onFilesChangeWithoutSync?: (files: FileItem[]) => void;
   dimensions: DimRow[];
   setDimensions: React.Dispatch<React.SetStateAction<DimRow[]>>;
   onClose: () => void;
@@ -51,7 +51,7 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
         setDimensions(prev => prev.map(d => d.sys_id === dimModalConfig.dimId ? { ...d, WHMC: newDim, WHMS: newDim } : d));
         
         // Use onFilesChangeWithoutSync so we don't trigger backend saves for all files!
-        const filesUpdater = (prev: FileItem[]) => prev.map(f => {
+        const updatedFiles = files.map(f => {
           if (!f.attributes[dimModalConfig.initialName!]) return f;
           const newAttrs = { ...f.attributes };
           newAttrs[newDim] = newAttrs[dimModalConfig.initialName!];
@@ -60,9 +60,9 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
         });
         
         if (onFilesChangeWithoutSync) {
-          onFilesChangeWithoutSync(filesUpdater);
+          onFilesChangeWithoutSync(updatedFiles);
         } else {
-          setFiles(filesUpdater);
+          setFiles(updatedFiles);
         }
 
         if (selectedDimension === dimModalConfig.initialName) setSelectedDimension(newDim);
@@ -84,7 +84,7 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
       setDimensions(prev => prev.filter(d => d.sys_id !== deleteDimConfig.dimId));
       if (selectedDimension === deleteDimConfig.dimName) setSelectedDimension('');
       
-      const filesUpdater = (prev: FileItem[]) => prev.map(f => {
+      const updatedFiles = files.map(f => {
         if (!f.attributes[deleteDimConfig.dimName!]) return f;
         const newAttrs = { ...f.attributes };
         delete newAttrs[deleteDimConfig.dimName!];
@@ -92,9 +92,9 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
       });
       
       if (onFilesChangeWithoutSync) {
-        onFilesChangeWithoutSync(filesUpdater);
+        onFilesChangeWithoutSync(updatedFiles);
       } else {
-        setFiles(filesUpdater);
+        setFiles(updatedFiles);
       }
       
       setDeleteDimConfig({ isOpen: false });
@@ -139,7 +139,7 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
     // Tag rename updates the tag on all files. This probably should trigger DB sync since file fingerprints change
     // If the backend has its own logic for renaming tags, we'd call the backend API, then use onFilesChangeWithoutSync.
     // Currently tag rename is purely local? Wait, if we don't have a backend rename tag API yet, it falls back to DB sync.
-    setFiles(prev => prev.map(file => {
+    setFiles(files.map(file => {
       const currentTags = file.attributes[selectedDimension];
       if (!currentTags || !currentTags.includes(oldName)) return file;
       
@@ -163,7 +163,7 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
     
     const trimmed = targetName.trim();
     
-    setFiles(prev => prev.map(file => {
+    setFiles(files.map(file => {
       const currentTags = file.attributes[selectedDimension];
       if (!currentTags || !currentTags.includes(sourceName)) return file;
       
@@ -189,7 +189,7 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
 
   const confirmDelete = () => {
     if (!tagToDelete) return;
-    setFiles(prev => prev.map(file => {
+    setFiles(files.map(file => {
       const currentTags = file.attributes[selectedDimension];
       if (!currentTags || !currentTags.includes(tagToDelete)) return file;
       
