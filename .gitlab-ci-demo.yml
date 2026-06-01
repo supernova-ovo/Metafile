@@ -1,0 +1,136 @@
+stages:
+  - install
+  - build
+  - deploy
+
+# 环境变量配置，根据分支自动选择对应环境
+variables:
+  NODE_VERSION: "22"
+  PROJECT_NAME: "datashare"
+  DEPLOY_BASE: "/deploy"
+  BACKUP_ENV: "backup"
+  PROJECT_GROUP: "aiapps"
+  
+  # 环境检测和变量映射
+  CURRENT_ENV: "production"
+  
+  # 根据当前环境设置部署路径和环境变量
+  ENVIRONMENT: "lolapp1"
+  DEPLOY_PATH: "${DEPLOY_BASE}/${ENVIRONMENT}/${PROJECT_GROUP}/${PROJECT_NAME}"
+  BACKUP_PATH: "${DEPLOY_BASE}/${BACKUP_ENV}/${ENVIRONMENT}/${PROJECT_GROUP}/${PROJECT_NAME}"
+  
+  # OIDC 认证环境变量动态映射
+  VITE_AUTH_AUTHORITY: "${PROD_VITE_AUTH_AUTHORITY}"
+  VITE_AUTH_CLIENT_ID: "${PROD_VITE_AUTH_CLIENT_ID}"
+  VITE_AUTH_CLIENT_SECRET: "${PROD_VITE_AUTH_CLIENT_SECRET}"
+
+install_dependencies:
+  stage: install
+  image: dreg.tepc.cn/library/node:${NODE_VERSION}-alpine
+  script:
+    # 配置 npm 镜像源和超时参数（应对网络限制）
+    - npm config set registry https://registry.npmmirror.com
+    - npm config set fetch-timeout 300000
+    - npm config set fetch-retries 5
+    - npm config set fetch-retry-mintimeout 10000
+    - npm config set fetch-retry-maxtimeout 60000
+    # 启用详细日志便于排查问题
+    - npm config set loglevel verbose
+    # 安装依赖
+    - npm install --legacy-peer-deps
+  timeout: 15m
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+    policy: push
+  tags:
+    - node
+    - docker
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.*/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+build:
+  stage: build
+  image: dreg.tepc.cn/library/node:${NODE_VERSION}-alpine
+  cache:
+    key: ${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+    policy: pull
+  script:
+    # 输出当前环境信息用于调试
+    - echo "当前环境 ${CURRENT_ENV}"
+    - echo "部署环境 ${ENVIRONMENT}"
+    - echo "认证服务器 ${VITE_AUTH_AUTHORITY}"
+    # 构建项目
+    - npm run build
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 30 days
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "master"'
+    - if: '$CI_COMMIT_BRANCH == "develop"'
+    - if: '$CI_COMMIT_BRANCH =~ /^feature\/.*/'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  tags:
+    - node
+    - docker
+
+deploy:
+  stage: deploy
+  image: dreg.tepc.cn/library/node:${NODE_VERSION}-alpine
+  dependencies:
+    - build
+  script:
+    - echo "开始部署至 ${DEPLOY_PATH}"
+    - echo "当前环境  ${CURRENT_ENV}"
+    - echo "部署环境  ${ENVIRONMENT}"
+    # 1. 准备目录
+    - mkdir -p ${DEPLOY_PATH}
+    - mkdir -p ${BACKUP_PATH}
+    # 2. 授权环境及项目群目录
+    - chmod 755 ${DEPLOY_BASE}/${ENVIRONMENT}
+    - chmod 755 ${DEPLOY_BASE}/${ENVIRONMENT}/${PROJECT_GROUP}
+    - chmod 755 ${DEPLOY_BASE}/${BACKUP_ENV}
+    - chmod 755 ${DEPLOY_BASE}/${BACKUP_ENV}/${ENVIRONMENT}
+    - chmod 755 ${DEPLOY_BASE}/${BACKUP_ENV}/${ENVIRONMENT}/${PROJECT_GROUP}
+    - chmod 755 ${BACKUP_PATH}
+    # 3. 备份逻辑：如果部署目录不为空，则将内容整体备份至独立目录，并清空原目录
+    - |
+      if [ -d "${DEPLOY_PATH}" ] && [ "$(ls -A ${DEPLOY_PATH})" ]; then
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        echo "检测到旧版本，正在备份至 ${BACKUP_PATH}/backup_${TIMESTAMP}"
+        mkdir -p ${BACKUP_PATH}/backup_${TIMESTAMP}
+        # 使用 cp 备份
+        cp -af ${DEPLOY_PATH}/. ${BACKUP_PATH}/backup_${TIMESTAMP}/
+        echo "备份完成，开始清理部署目录"
+        # 彻底清空：使用 find 递归删除所有内容（包括隐藏文件），然后删除目录本身并重建
+        find "${DEPLOY_PATH}" -mindepth 1 -delete || true
+        rm -rf "${DEPLOY_PATH}"
+        mkdir -p "${DEPLOY_PATH}"
+        echo "部署目录已清空并重建"
+        # 清理旧备份，保留最近 5 个
+        ls -dt ${BACKUP_PATH}/backup_* 2>/dev/null | tail -n +6 | xargs -r rm -rf
+      fi
+    # 4. 部署新版本内容
+    - echo "正在将产物从 ${CI_PROJECT_DIR}/dist 部署到 ${DEPLOY_PATH}"
+    - cp -rf ${CI_PROJECT_DIR}/dist/. ${DEPLOY_PATH}/
+    - chmod -R 755 ${DEPLOY_PATH}
+    - echo "部署完成！路径：${DEPLOY_PATH}"
+    - ls -lah ${DEPLOY_PATH}
+  rules:
+    - if: '$ENVIRONMENT == "lolapp1"'
+      when: manual
+    - if: '$ENVIRONMENT != "lolapp1"'
+      when: on_success
+  tags:
+    - node
+    - docker
+  environment:
+    name: ${ENVIRONMENT}
+    url: https://${ENVIRONMENT}.example.com/${PROJECT_GROUP}/${PROJECT_NAME}
