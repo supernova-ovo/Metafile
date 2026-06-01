@@ -9,7 +9,7 @@ variables:
   PROJECT_NAME: "metafile"
   DEPLOY_BASE: "/deploy"
   BACKUP_ENV: "backup"
-  PROJECT_GROUP: "ai"
+  PROJECT_GROUP: "aiapps"
   
   # 环境检测和变量映射
   CURRENT_ENV: "production"
