@@ -30,3 +30,8 @@ database/metafile.db-shm
 
 test-remove.cjs
 test-remove.js
+
+# Environment variables & local configuration
+.env
+.env.local
+.env.*.local
