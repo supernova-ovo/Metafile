@@ -1,11 +1,52 @@
-export const API_HANDLER_URL = '/ks/sectionHandler.ashx';
-export const UPLOAD_URL = '/ks/editor/upload_json.ashx?dir=file';
+const isDev = typeof import.meta !== 'undefined' && import.meta.env?.DEV;
 
+export const API_HANDLER_URL = isDev ? '/ks/sectionHandler.ashx' : '/jetopcms/ks/sectionHandler.ashx';
+export const UPLOAD_URL = isDev ? '/ks/editor/upload_json.ashx?dir=file' : '/jetopcms/ks/editor/upload_json.ashx?dir=file';
+
+// 公司内部 Jetop SSO 登录入口（携带 returnUrl，登录后能跳回当前页）
+export const JETOP_SSO_LOGIN_URL =
+  'https://test1.tepc.cn/jetopcms/ks/protalpage_layui.aspx?id=137c1dbc-58b3-ddb0-0340-a029a324457d';
+
+/**
+ * 静态调试 Token：仅本地开发（npm run dev）使用
+ * ⚠️ 生产环境绝不能注入 VITE_AUTH_TOKEN，否则后端 X-JetopDebug-User 会
+ *    旁路 SSO 校验，页面将永远不会跳转到登录页。
+ */
 export function getAuthToken(): string {
-  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_AUTH_TOKEN) {
+  if (isDev && typeof import.meta !== 'undefined' && import.meta.env?.VITE_AUTH_TOKEN) {
     return import.meta.env.VITE_AUTH_TOKEN as string;
   }
   return '';
+}
+
+export function isHtmlLoginResponse(text: string): boolean {
+  if (!text) return false;
+  return (
+    text.includes('<!DOCTYPE html>') ||
+    text.includes('<html') ||
+    text.includes('protalpage_layui') ||
+    text.includes('login')
+  );
+}
+
+/**
+ * 把当前页面 returnUrl 拼到 SSO 登录页，登录完成后回到原页面
+ */
+export function buildLoginRedirectUrl(currentHref?: string): string {
+  const here = currentHref ?? (typeof window !== 'undefined' ? window.location.href : '');
+  if (!here) return JETOP_SSO_LOGIN_URL;
+  const sep = JETOP_SSO_LOGIN_URL.includes('?') ? '&' : '?';
+  return `${JETOP_SSO_LOGIN_URL}${sep}returnUrl=${encodeURIComponent(here)}`;
+}
+
+/**
+ * 主动重定向到 SSO 登录页（带 returnUrl）
+ */
+export function redirectToLogin(): void {
+  if (typeof window === 'undefined') return;
+  const target = buildLoginRedirectUrl();
+  // 用 replace 避免在浏览器历史里留下未授权访问的痕迹
+  window.location.replace(target);
 }
 
 export function generateUUID(): string {
@@ -50,20 +91,48 @@ export async function apiClient(formFields: Record<string, string>): Promise<any
 
   const { boundary, body } = buildFormData(processedFields);
 
+  const headers: Record<string, string> = {
+    'Content-Type': `multipart/form-data; boundary=${boundary}`,
+  };
+  // 仅在 dev 静态 token 存在时附加 X-JetopDebug-User
+  if (token) {
+    headers['X-JetopDebug-User'] = token;
+  }
+
   const response = await fetch(API_HANDLER_URL, {
     method: 'POST',
-    headers: {
-      'X-JetopDebug-User': token,
-      'Content-Type': `multipart/form-data; boundary=${boundary}`,
-    },
+    headers,
+    // 重要：必须带上 credentials，让浏览器把 SSO Cookie 转发到 Jetop 后端
+    credentials: 'include',
     body,
   });
 
+  // 1. 检查是否重定向（如果 session 缺失或过期，API 通常会被重定向至登录页）
+  if (response.redirected) {
+    console.warn('[API] 检测到登录重定向，正在跳转到登录页面:', response.url);
+    redirectToLogin();
+    return new Promise(() => {}); // 返回未决定的 Promise 阻止后续逻辑执行报错
+  }
+
   if (!response.ok) {
+    // 401 / 403 一律视为未登录，跳转 SSO
+    if (response.status === 401 || response.status === 403) {
+      console.warn('[API] 未授权访问 (HTTP ' + response.status + ')，跳转登录');
+      redirectToLogin();
+      return new Promise(() => {});
+    }
     throw new Error(`HTTP错误: ${response.status} ${response.statusText}`);
   }
 
   const text = await response.text();
+
+  // 2. 检查返回内容是否为 HTML，若是 HTML 则可能是未登录时被拦截返回的登录/网关页面
+  if (isHtmlLoginResponse(text)) {
+    console.warn('[API] 检测到响应内容为 HTML（疑似登录页），跳转 SSO 登录...');
+    redirectToLogin();
+    return new Promise(() => {});
+  }
+
   let parsed: any;
   try {
     parsed = JSON.parse(text);
@@ -88,4 +157,47 @@ export async function apiClient(formFields: Record<string, string>): Promise<any
   }
   
   return parsed;
+}
+
+/**
+ * 主动校验当前会话是否有效
+ * - 用于 AuthGuard 启动时检查
+ * - 返回 true：会话有效
+ * - 返回 false：未登录 / 会话过期
+ *   （注：检测到未登录时函数内部会直接跳转 SSO，不会再返回）
+ */
+export async function checkSession(): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = {};
+    const token = getAuthToken();
+    if (token) headers['X-JetopDebug-User'] = token;
+
+    // 用 HEAD / GET 一个轻量端点，dev 下走 vite 代理，生产直连相对路径
+    const probeUrl = isDev ? '/ks/sectionHandler.ashx' : '/jetopcms/ks/sectionHandler.ashx';
+    const response = await fetch(probeUrl, {
+      method: 'GET',
+      headers,
+      credentials: 'include',
+    });
+
+    if (response.redirected) {
+      redirectToLogin();
+      return false;
+    }
+    if (response.status === 401 || response.status === 403) {
+      redirectToLogin();
+      return false;
+    }
+    // 拿到响应体再判断一次
+    const text = await response.clone().text();
+    if (isHtmlLoginResponse(text)) {
+      redirectToLogin();
+      return false;
+    }
+    return response.ok;
+  } catch (err) {
+    console.warn('[checkSession] 会话检查失败，视为未登录:', err);
+    redirectToLogin();
+    return false;
+  }
 }

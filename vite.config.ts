@@ -15,17 +15,11 @@ export default defineConfig({
         target: 'https://test1.tepc.cn/jetopcms',
         changeOrigin: true,
         secure: false,
-        headers: {
-          'host': 'localhost',
-        },
       },
       '/editor': {
         target: 'https://test1.tepc.cn/jetopcms',
         changeOrigin: true,
         secure: false,
-        headers: {
-          'host': 'localhost',
-        },
       },
     },
   },

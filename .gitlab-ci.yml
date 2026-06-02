@@ -19,8 +19,9 @@ variables:
   DEPLOY_PATH: "${DEPLOY_BASE}/${ENVIRONMENT}/${PROJECT_GROUP}/${PROJECT_NAME}"
   BACKUP_PATH: "${DEPLOY_BASE}/${BACKUP_ENV}/${ENVIRONMENT}/${PROJECT_GROUP}/${PROJECT_NAME}"
   
-  # MetaFile API 环境变量动态映射
-  VITE_AUTH_TOKEN: "${PROD_VITE_AUTH_TOKEN}"
+  # ⚠️ 生产环境不再注入 VITE_AUTH_TOKEN（调试后门），改由浏览器走公司 SSO Cookie
+  # 如需本地构建调试，请改用 .env 本地文件
+  VITE_AUTH_TOKEN: ""
 
 install_dependencies:
   stage: install
