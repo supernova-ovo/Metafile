@@ -18,7 +18,6 @@ export function AuthGuard({ children }: AuthGuardProps) {
 
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
 
     const run = async () => {
       try {
@@ -39,14 +38,8 @@ export function AuthGuard({ children }: AuthGuardProps) {
 
     run();
 
-    // 兜底：3 秒还没出结果（极端慢网络），也强制进入 ok 状态让 UI 可用
-    timer = setTimeout(() => {
-      setStatus((prev) => (prev === 'checking' ? 'ok' : prev));
-    }, 3000);
-
     return () => {
       cancelled = true;
-      if (timer) clearTimeout(timer);
     };
   }, []);
 

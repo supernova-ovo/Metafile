@@ -29,6 +29,19 @@ export function isHtmlLoginResponse(text: string): boolean {
   );
 }
 
+export function isUnauthorizedTextResponse(text: string): boolean {
+  if (!text) return false;
+  const normalized = text.trim().toLowerCase();
+  return (
+    normalized.includes('not provide token error') ||
+    normalized.includes('provide token error') ||
+    normalized.includes('token error') ||
+    normalized.includes('not logged in') ||
+    normalized.includes('unauthorized') ||
+    normalized.includes('forbidden')
+  );
+}
+
 /**
  * 把当前页面 returnUrl 拼到 SSO 登录页，登录完成后回到原页面
  */
@@ -71,6 +84,12 @@ export function buildFormData(fields: Record<string, string>): { boundary: strin
 
 export function encodeData(obj: any): string {
   return btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
+}
+
+async function handleUnauthorizedResponse(rawText: string, reason: string): Promise<never> {
+  console.warn(`[API] ${reason}，跳转 SSO 登录...`, rawText);
+  redirectToLogin();
+  return new Promise(() => {});
 }
 
 export async function apiClient(formFields: Record<string, string>): Promise<any> {
@@ -128,9 +147,12 @@ export async function apiClient(formFields: Record<string, string>): Promise<any
 
   // 2. 检查返回内容是否为 HTML，若是 HTML 则可能是未登录时被拦截返回的登录/网关页面
   if (isHtmlLoginResponse(text)) {
-    console.warn('[API] 检测到响应内容为 HTML（疑似登录页），跳转 SSO 登录...');
-    redirectToLogin();
-    return new Promise(() => {});
+    return handleUnauthorizedResponse(text, '检测到响应内容为 HTML（疑似登录页）');
+  }
+
+  // 3. Jetop 某些未登录场景不会返回 302 / 401 / HTML，而是直接回纯文本错误
+  if (isUnauthorizedTextResponse(text)) {
+    return handleUnauthorizedResponse(text, '检测到未登录文本响应');
   }
 
   let parsed: any;
@@ -168,33 +190,13 @@ export async function apiClient(formFields: Record<string, string>): Promise<any
  */
 export async function checkSession(): Promise<boolean> {
   try {
-    const headers: Record<string, string> = {};
-    const token = getAuthToken();
-    if (token) headers['X-JetopDebug-User'] = token;
-
-    // 用 HEAD / GET 一个轻量端点，dev 下走 vite 代理，生产直连相对路径
-    const probeUrl = isDev ? '/ks/sectionHandler.ashx' : '/jetopcms/ks/sectionHandler.ashx';
-    const response = await fetch(probeUrl, {
-      method: 'GET',
-      headers,
-      credentials: 'include',
+    await apiClient({
+      id: '383be00c-b492-3ce0-373a-43b6a3bedaad',
+      mode: 'query',
+      _pageindex: '1',
+      _pagesize: '1',
     });
-
-    if (response.redirected) {
-      redirectToLogin();
-      return false;
-    }
-    if (response.status === 401 || response.status === 403) {
-      redirectToLogin();
-      return false;
-    }
-    // 拿到响应体再判断一次
-    const text = await response.clone().text();
-    if (isHtmlLoginResponse(text)) {
-      redirectToLogin();
-      return false;
-    }
-    return response.ok;
+    return true;
   } catch (err) {
     console.warn('[checkSession] 会话检查失败，视为未登录:', err);
     redirectToLogin();
