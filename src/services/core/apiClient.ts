@@ -3,9 +3,9 @@ const isDev = typeof import.meta !== 'undefined' && import.meta.env?.DEV;
 export const API_HANDLER_URL = isDev ? '/ks/sectionHandler.ashx' : '/jetopcms/ks/sectionHandler.ashx';
 export const UPLOAD_URL = isDev ? '/ks/editor/upload_json.ashx?dir=file' : '/jetopcms/ks/editor/upload_json.ashx?dir=file';
 
-// 公司内部 Jetop SSO 登录入口（携带 returnUrl，登录后能跳回当前页）
-export const JETOP_SSO_LOGIN_URL =
-  'https://test1.tepc.cn/jetopcms/ks/protalpage_layui.aspx?id=137c1dbc-58b3-ddb0-0340-a029a324457d';
+// 公司内部统一认证入口
+export const JETOP_SSO_BASE_URL = 'https://lol.tepc.cn/mm/default.aspx';
+export const APP_ENTRY_URL = 'https://lol.tepc.cn/jetopcms/aiapps/metafile/index.html';
 
 /**
  * 静态调试 Token：仅本地开发（npm run dev）使用
@@ -43,13 +43,11 @@ export function isUnauthorizedTextResponse(text: string): boolean {
 }
 
 /**
- * 把当前页面 returnUrl 拼到 SSO 登录页，登录完成后回到原页面
+ * 统一认证后回跳到当前项目入口页。
  */
 export function buildLoginRedirectUrl(currentHref?: string): string {
-  const here = currentHref ?? (typeof window !== 'undefined' ? window.location.href : '');
-  if (!here) return JETOP_SSO_LOGIN_URL;
-  const sep = JETOP_SSO_LOGIN_URL.includes('?') ? '&' : '?';
-  return `${JETOP_SSO_LOGIN_URL}${sep}returnUrl=${encodeURIComponent(here)}`;
+  void currentHref;
+  return `${JETOP_SSO_BASE_URL}?ReturnUrl=${encodeURIComponent(APP_ENTRY_URL)}`;
 }
 
 /**
