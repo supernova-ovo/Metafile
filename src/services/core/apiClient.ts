@@ -202,8 +202,7 @@ export async function checkSession(): Promise<boolean> {
     });
     return true;
   } catch (err) {
-    console.warn('[checkSession] 会话检查失败，视为未登录:', err);
-    redirectToLogin();
-    return false;
+    console.warn('[checkSession] 启动会话探测失败，放行应用并交给业务加载降级处理:', err);
+    return true;
   }
 }
