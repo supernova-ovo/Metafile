@@ -14,6 +14,7 @@ async function uploadFileBinary(file: File): Promise<string> {
 
   const response = await fetch(UPLOAD_URL, {
     method: 'POST',
+    credentials: 'include',
     body: formData,
   });
 

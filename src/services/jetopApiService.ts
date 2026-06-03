@@ -42,6 +42,7 @@ async function uploadSingleFile(file: File): Promise<UploadFileResult> {
 
     const response = await fetch(UPLOAD_URL, {
       method: 'POST',
+      credentials: 'include',
       body: formData,
     });
 

@@ -22,6 +22,8 @@ variables:
   # ⚠️ 生产环境不再注入 VITE_AUTH_TOKEN（调试后门），改由浏览器走公司 SSO Cookie
   # 如需本地构建调试，请改用 .env 本地文件
   VITE_AUTH_TOKEN: ""
+  VITE_SSO_LOGIN_URL: "https://lol.tepc.cn/mm/default.aspx"
+  VITE_APP_ENTRY_URL: "https://lol.tepc.cn/jetopcms/${PROJECT_GROUP}/${PROJECT_NAME}/index.html"
 
 install_dependencies:
   stage: install
@@ -64,7 +66,8 @@ build:
     # 输出当前环境信息用于调试
     - echo "当前环境 ${CURRENT_ENV}"
     - echo "部署环境 ${ENVIRONMENT}"
-    - echo "认证 Token ${VITE_AUTH_TOKEN:0:6}..."
+    - echo "SSO 登录入口 ${VITE_SSO_LOGIN_URL}"
+    - echo "应用回跳地址 ${VITE_APP_ENTRY_URL}"
     # 构建项目
     - npm run build
   artifacts:
@@ -132,4 +135,4 @@ deploy:
     - docker
   environment:
     name: ${ENVIRONMENT}
-    url: https://${ENVIRONMENT}.example.com/${PROJECT_GROUP}/${PROJECT_NAME}
+    url: ${VITE_APP_ENTRY_URL}

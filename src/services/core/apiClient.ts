@@ -4,8 +4,11 @@ export const API_HANDLER_URL = isDev ? '/ks/sectionHandler.ashx' : '/jetopcms/ks
 export const UPLOAD_URL = isDev ? '/ks/editor/upload_json.ashx?dir=file' : '/jetopcms/ks/editor/upload_json.ashx?dir=file';
 
 // 公司内部统一认证入口
-export const JETOP_SSO_BASE_URL = 'https://lol.tepc.cn/mm/default.aspx';
-export const APP_ENTRY_URL = 'https://lol.tepc.cn/jetopcms/aiapps/metafile/index.html';
+export const JETOP_SSO_BASE_URL =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SSO_LOGIN_URL) ||
+  'https://lol.tepc.cn/mm/default.aspx';
+const CONFIGURED_APP_ENTRY_URL =
+  typeof import.meta !== 'undefined' ? import.meta.env?.VITE_APP_ENTRY_URL : '';
 
 /**
  * 静态调试 Token：仅本地开发（npm run dev）使用
@@ -46,8 +49,11 @@ export function isUnauthorizedTextResponse(text: string): boolean {
  * 统一认证后回跳到当前项目入口页。
  */
 export function buildLoginRedirectUrl(currentHref?: string): string {
-  void currentHref;
-  return `${JETOP_SSO_BASE_URL}?ReturnUrl=${encodeURIComponent(APP_ENTRY_URL)}`;
+  const returnUrl =
+    CONFIGURED_APP_ENTRY_URL ||
+    currentHref ||
+    (typeof window !== 'undefined' ? window.location.href : '');
+  return `${JETOP_SSO_BASE_URL}?ReturnUrl=${encodeURIComponent(returnUrl)}`;
 }
 
 /**
@@ -55,7 +61,7 @@ export function buildLoginRedirectUrl(currentHref?: string): string {
  */
 export function redirectToLogin(): void {
   if (typeof window === 'undefined') return;
-  const target = buildLoginRedirectUrl();
+  const target = buildLoginRedirectUrl(window.location.href);
   // 用 replace 避免在浏览器历史里留下未授权访问的痕迹
   window.location.replace(target);
 }
