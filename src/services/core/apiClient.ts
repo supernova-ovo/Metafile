@@ -45,6 +45,27 @@ export function isUnauthorizedTextResponse(text: string): boolean {
   );
 }
 
+export function hasPlatformLoginCookies(cookieString?: string): boolean {
+  if (typeof document === 'undefined' && cookieString === undefined) return false;
+  const source = cookieString ?? document.cookie;
+  const cookies = new Map(
+    source
+      .split(';')
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const separatorIndex = part.indexOf('=');
+        if (separatorIndex === -1) return [part, ''] as const;
+        return [
+          part.slice(0, separatorIndex).trim(),
+          part.slice(separatorIndex + 1).trim(),
+        ] as const;
+      })
+  );
+
+  return ['ud', 'uid', 'un'].every((name) => Boolean(cookies.get(name)));
+}
+
 /**
  * 统一认证后回跳到当前项目入口页。
  */
@@ -188,21 +209,14 @@ export async function apiClient(formFields: Record<string, string>): Promise<any
 /**
  * 主动校验当前会话是否有效
  * - 用于 AuthGuard 启动时检查
- * - 返回 true：会话有效
- * - 返回 false：未登录 / 会话过期
- *   （注：检测到未登录时函数内部会直接跳转 SSO，不会再返回）
+ * - 平台约定：Cookie 中同时存在 ud / uid / un 即视为已登录
  */
 export async function checkSession(): Promise<boolean> {
-  try {
-    await apiClient({
-      id: '383be00c-b492-3ce0-373a-43b6a3bedaad',
-      mode: 'query',
-      _pageindex: '1',
-      _pagesize: '1',
-    });
-    return true;
-  } catch (err) {
-    console.warn('[checkSession] 启动会话探测失败，放行应用并交给业务加载降级处理:', err);
+  if (hasPlatformLoginCookies()) {
     return true;
   }
+
+  console.warn('[checkSession] 缺少平台登录 Cookie（ud / uid / un），跳转 SSO 登录');
+  redirectToLogin();
+  return new Promise<boolean>(() => {});
 }
