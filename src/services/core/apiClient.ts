@@ -112,9 +112,8 @@ export function encodeData(obj: any): string {
 }
 
 async function handleUnauthorizedResponse(rawText: string, reason: string): Promise<never> {
-  console.warn(`[API] ${reason}，跳转 SSO 登录...`, rawText);
-  redirectToLogin();
-  return new Promise(() => {});
+  console.warn(`[API] ${reason}，已拦截自动跳转，便于诊断`, rawText);
+  throw new Error(`[AUTH_DIAGNOSTIC] ${reason}`);
 }
 
 export async function apiClient(formFields: Record<string, string>): Promise<any> {
@@ -153,17 +152,23 @@ export async function apiClient(formFields: Record<string, string>): Promise<any
 
   // 1. 检查是否重定向（如果 session 缺失或过期，API 通常会被重定向至登录页）
   if (response.redirected) {
-    console.warn('[API] 检测到登录重定向，正在跳转到登录页面:', response.url);
-    redirectToLogin();
-    return new Promise(() => {}); // 返回未决定的 Promise 阻止后续逻辑执行报错
+    console.warn('[API] 检测到登录重定向，已拦截自动跳转，便于诊断:', {
+      request: formFields,
+      responseUrl: response.url,
+      status: response.status,
+    });
+    throw new Error(`[AUTH_DIAGNOSTIC] 检测到登录重定向: ${response.url}`);
   }
 
   if (!response.ok) {
     // 401 / 403 一律视为未登录，跳转 SSO
     if (response.status === 401 || response.status === 403) {
-      console.warn('[API] 未授权访问 (HTTP ' + response.status + ')，跳转登录');
-      redirectToLogin();
-      return new Promise(() => {});
+      console.warn('[API] 未授权访问，已拦截自动跳转，便于诊断:', {
+        request: formFields,
+        status: response.status,
+        statusText: response.statusText,
+      });
+      throw new Error(`[AUTH_DIAGNOSTIC] 未授权访问: HTTP ${response.status}`);
     }
     throw new Error(`HTTP错误: ${response.status} ${response.statusText}`);
   }
@@ -212,11 +217,14 @@ export async function apiClient(formFields: Record<string, string>): Promise<any
  * - 平台约定：Cookie 中同时存在 ud / uid / un 即视为已登录
  */
 export async function checkSession(): Promise<boolean> {
-  if (hasPlatformLoginCookies()) {
-    return true;
-  }
-
-  console.warn('[checkSession] 缺少平台登录 Cookie（ud / uid / un），跳转 SSO 登录');
-  redirectToLogin();
-  return new Promise<boolean>(() => {});
+  console.warn('[checkSession] 诊断模式：暂时放行入口 Cookie 校验', {
+    hasPlatformLoginCookies: hasPlatformLoginCookies(),
+    readableCookieNames: typeof document === 'undefined'
+      ? []
+      : document.cookie
+        .split(';')
+        .map((part) => part.trim().split('=')[0])
+        .filter(Boolean),
+  });
+  return true;
 }
