@@ -9,7 +9,7 @@ export function JobQueueOverlay() {
   const [isMinimized, setIsMinimized] = useState(false);
 
   const jobList = Object.values(jobs);
-  if (jobList.length === 0 && !isQueueOpen) return null;
+  if (!isQueueOpen) return null;
   if (jobList.length === 0) {
     // Auto close if empty
     setTimeout(() => setQueueOpen(false), 0);
@@ -51,7 +51,11 @@ export function JobQueueOverlay() {
           </button>
           <button 
             className="p-1 hover:bg-gray-200 rounded text-gray-500"
-            onClick={(e) => { e.stopPropagation(); setQueueOpen(false); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              clearCompleted();
+              setQueueOpen(false);
+            }}
           >
             <X className="w-4 h-4" />
           </button>

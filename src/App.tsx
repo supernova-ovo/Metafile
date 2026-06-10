@@ -7,7 +7,7 @@ import { DeleteFileModal } from './components/DeleteFileModal';
 import { StatusToast } from './components/StatusToast';
 import { UploadModal } from './components/UploadModal';
 import { Management } from './components/Management';
-import { UploadCloud } from 'lucide-react';
+import { Loader2, UploadCloud } from 'lucide-react';
 import { buildAvailableTagValues } from './lib/mock-data';
 import type { FileItem, ActiveFilter } from './lib/types';
 import { fileService } from './services/fileService';
@@ -59,6 +59,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeFilters, setActiveFilters] = useState<ActiveFilter[]>([]);
   const [quickFilter, setQuickFilter] = useState("all");
+  const [isBootstrapping, setIsBootstrapping] = useState(true);
   const isBootstrappingRef = useRef(true);
   const hasInitRunRef = useRef(false);
 
@@ -96,6 +97,7 @@ function App() {
 
     initFromDb().finally(() => {
       isBootstrappingRef.current = false;
+      setIsBootstrapping(false);
     });
   }, []);
 
@@ -310,6 +312,17 @@ function App() {
   };
 
   const selectedFile = files.find(f => f.id === selectedFileId);
+
+  if (isBootstrapping) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-[#FBFBFA] font-sans text-primary">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="h-8 w-8 animate-spin text-indigo-500" />
+          <div className="text-sm font-medium text-gray-700">正在加载文件视图...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div 
