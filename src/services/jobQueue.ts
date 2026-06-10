@@ -1,5 +1,6 @@
 import { useJobStore } from '../store/useJobStore';
-import { UPLOAD_URL, apiClient, generateUUID, encodeData } from './core/apiClient';
+import { useFileStore } from '../store/useFileStore';
+import { UPLOAD_URL, apiClient, generateUUID, encodeData, getCurrentUserId } from './core/apiClient';
 import * as apiService from './apiService';
 
 const SECTION_ID_FILES = '76c22773-66cb-a51c-359b-5a2872169266';
@@ -38,6 +39,7 @@ async function syncFileMetadata(job: ReturnType<typeof useJobStore.getState>['jo
     .filter(([, values]) => values.length > 0)
     .map(([dim, values]) => `${dim}: ${values.join(', ')}`)
     .join('; ');
+  const currentUserId = getCurrentUserId(undefined, 'uploader');
 
   const record = {
     sys_id: file.id || generateUUID(),
@@ -48,8 +50,8 @@ async function syncFileMetadata(job: ReturnType<typeof useJobStore.getState>['jo
     BZ: attrText || '前端上传',
     Url: url,
     XuHao: '1',
-    sys_user: 'uploader',
-    sys_muser: 'uploader',
+    sys_user: currentUserId,
+    sys_muser: currentUserId,
     sys_valid: 1,
     sys_batchid: generateUUID(),
     sys_epsid: generateUUID(),
@@ -91,6 +93,7 @@ export const jobQueue = {
         update(jobId, { status: 'uploading', progress: 10, error: undefined });
         const url = await uploadFileBinary(job.file);
         update(jobId, { url, progress: 50 });
+        useFileStore.getState().updateFileUrl(jobId, url);
       }
 
       // Step 2: Syncing Metadata & Tags

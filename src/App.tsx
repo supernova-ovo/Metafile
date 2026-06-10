@@ -275,7 +275,7 @@ function App() {
 
   const handleUploadConfirm = async (finalFiles: FileItem[]) => {
     // Add to FileStore immediately (optimistic update)
-    addFiles(finalFiles);
+    addFiles(finalFiles, true);
     setUploadModalFiles([]);
 
     if (pendingBrowserFiles.length > 0) {

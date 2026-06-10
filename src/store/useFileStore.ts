@@ -19,7 +19,8 @@ export interface FileStoreState {
   // Actions
   initFiles: (files: FileItem[]) => void;
   setFiles: (files: FileItem[], skipDbSync?: boolean) => void; // Used for replacing all files (e.g. from local storage/db)
-  addFiles: (files: FileItem[]) => void;
+  addFiles: (files: FileItem[], skipDbSync?: boolean) => void;
+  updateFileUrl: (fileId: string, url: string) => void;
   updateFileAttributes: (fileId: string, attributes: Record<string, string[]>) => void;
   deleteFile: (fileId: string) => void;
   resetFiles: () => void;
@@ -80,14 +81,29 @@ export const useFileStore = create<FileStoreState>((set, get) => {
     fileService.saveFiles(fileArray, { skipDbSync });
   },
 
-  addFiles: (newFiles) => {
+  addFiles: (newFiles, skipDbSync = false) => {
     const state = get();
     const files = { ...state.files };
     newFiles.forEach(f => files[f.id] = f);
     const indexes = buildIndexes(files);
     set({ files, indexes });
     
-    fileService.saveFiles(Object.values(files));
+    fileService.saveFiles(Object.values(files), { skipDbSync });
+  },
+
+  updateFileUrl: (fileId, url) => {
+    const state = get();
+    const file = state.files[fileId];
+    if (!file) return;
+
+    const files = {
+      ...state.files,
+      [fileId]: { ...file, url },
+    };
+    const indexes = buildIndexes(files);
+    set({ files, indexes });
+
+    fileService.saveFiles(Object.values(files), { skipDbSync: true });
   },
 
   updateFileAttributes: (fileId, attributes) => {

@@ -10,7 +10,7 @@
  *   D_WJGL_YHPH (用户偏好)   → 383be00c-b492-3ce0-373a-43b6a3bedaad
  */
 
-import { generateUUID, encodeData, apiClient } from './core/apiClient';
+import { generateUUID, encodeData, apiClient, getCurrentUserId } from './core/apiClient';
 
 const SECTION_IDS = {
   FILES: '76c22773-66cb-a51c-359b-5a2872169266',
@@ -166,6 +166,7 @@ export async function ensureDimension(whmc: string): Promise<string> {
 
   // 不存在则创建（补全所有 NOT NULL 字段）
   const now = new Date().toISOString();
+  const currentUserId = getCurrentUserId();
   const sys_id = generateUUID();
   const insertResult = await apiClient({
     id: SECTION_IDS.DIMS,
@@ -177,9 +178,9 @@ export async function ensureDimension(whmc: string): Promise<string> {
         WHMS: whmc,           // NOT NULL，用名称作为描述
         MRPX: 0,              // NOT NULL，默认排序0
         XuHao: '',            // NOT NULL
-        sys_user: 'metafile',
+        sys_user: currentUserId,
         sys_date: now,        // NOT NULL
-        sys_muser: 'metafile',
+        sys_muser: currentUserId,
         sys_mdate: now,       // NOT NULL
         sys_valid: 1,
         sys_batchid: generateUUID(),
@@ -280,6 +281,7 @@ export async function ensureTag(whid: string, bqz: string): Promise<string> {
 
   // 不存在则创建（补全所有 NOT NULL 字段）
   const now = new Date().toISOString();
+  const currentUserId = getCurrentUserId();
   const sys_id = generateUUID();
   const insertResult = await apiClient({
     id: SECTION_IDS.TAGS,
@@ -291,9 +293,9 @@ export async function ensureTag(whid: string, bqz: string): Promise<string> {
         BQZ: bqz,
         BZ: '',               // NOT NULL
         XuHao: '',            // NOT NULL
-        sys_user: 'metafile',
+        sys_user: currentUserId,
         sys_date: now,        // NOT NULL
-        sys_muser: 'metafile',
+        sys_muser: currentUserId,
         sys_mdate: now,       // NOT NULL
         sys_valid: 1,
         sys_batchid: generateUUID(),
@@ -319,7 +321,7 @@ export async function queryAllTags(): Promise<(TagRow & { WHMC?: string })[]> {
     id: SECTION_IDS.TAGS,
     mode: 'query',
     _pageindex: '1',
-    _pagesize: '500',
+    _pagesize: '5000',
   });
 
   const tags = (result.ROWS || []) as TagRow[];
@@ -386,11 +388,16 @@ export async function deleteFileWithRelations(fileId: string): Promise<boolean> 
 
 const DEFAULT_USER_ID = 'metafile-default-user';
 
+function getPreferenceUserId(): string {
+  return getCurrentUserId(undefined, DEFAULT_USER_ID);
+}
+
 export async function getPreference(): Promise<PrefRow | null> {
+  const userId = getPreferenceUserId();
   const result = await apiClient({
     id: SECTION_IDS.PREFERENCES,
     mode: 'query',
-    where: JSON.stringify({ YHID: DEFAULT_USER_ID }),
+    where: JSON.stringify({ YHID: userId }),
     _pageindex: '1',
     _pagesize: '1',
   });
@@ -405,6 +412,7 @@ export async function upsertPreference(prefs: {
   selectedFileId?: string | null;
 }): Promise<boolean> {
   const existing = await getPreference();
+  const userId = getPreferenceUserId();
 
   const fields: any = {};
   if (prefs.dimensionOrder !== undefined) fields.WHPX = JSON.stringify(prefs.dimensionOrder);
@@ -425,10 +433,10 @@ export async function upsertPreference(prefs: {
       _p_data: encodeData({
         updated: [{
           sys_id: generateUUID(),
-          YHID: DEFAULT_USER_ID,
+          YHID: userId,
           ...fields,
-          sys_user: 'metafile',
-          sys_muser: 'metafile',
+          sys_user: userId,
+          sys_muser: userId,
           sys_valid: 1,
           sys_batchid: generateUUID(),
           sys_epsid: generateUUID(),
@@ -512,6 +520,7 @@ async function _syncAttributesInner(
 
   // 4) 缺失维度批量创建（1 次 update），并回填缓存
   const now = new Date().toISOString();
+  const currentUserId = getCurrentUserId();
   const missingDimNames = [...new Set(normalizedTargets.map((t) => t.dimName))]
     .filter((name) => !dimNameToIdCache.has(name));
   if (missingDimNames.length > 0) {
@@ -521,9 +530,9 @@ async function _syncAttributesInner(
       WHMS: name,
       MRPX: 0,
       XuHao: '',
-      sys_user: 'metafile',
+      sys_user: currentUserId,
       sys_date: now,
-      sys_muser: 'metafile',
+      sys_muser: currentUserId,
       sys_mdate: now,
       sys_valid: 1,
       sys_batchid: generateUUID(),
@@ -572,9 +581,9 @@ async function _syncAttributesInner(
       BQZ: t.tagValue,
       BZ: '',
       XuHao: '',
-      sys_user: 'metafile',
+      sys_user: currentUserId,
       sys_date: now,
-      sys_muser: 'metafile',
+      sys_muser: currentUserId,
       sys_mdate: now,
       sys_valid: 1,
       sys_batchid: generateUUID(),
@@ -614,9 +623,9 @@ async function _syncAttributesInner(
       WHID: t.WHID,
       BZ: '',
       XuHao: '',
-      sys_user: 'metafile',
+      sys_user: currentUserId,
       sys_date: now,
-      sys_muser: 'metafile',
+      sys_muser: currentUserId,
       sys_mdate: now,
       sys_valid: 1,
       sys_batchid: generateUUID(),

@@ -8,7 +8,7 @@
 
 const SECTION_ID_FILES = '76c22773-66cb-a51c-359b-5a2872169266';
 
-import { generateUUID, encodeData, apiClient, UPLOAD_URL } from './core/apiClient';
+import { generateUUID, encodeData, apiClient, UPLOAD_URL, getCurrentUserId } from './core/apiClient';
 
 /**
  * 构建 multipart/form-data 请求体（含文件）
@@ -117,6 +117,7 @@ function toFileUploadRecord(
     .filter(([, values]) => values.length > 0)
     .map(([dim, values]) => `${dim}: ${values.join(', ')}`)
     .join('; ');
+  const currentUserId = getCurrentUserId(undefined, 'uploader');
 
   return {
     WJMC: file.name,
@@ -126,8 +127,8 @@ function toFileUploadRecord(
     BZ: attrText || '前端上传',
     Url: fileUrl,
     XuHao: String(index + 1),
-    sys_user: 'uploader',
-    sys_muser: 'uploader',
+    sys_user: currentUserId,
+    sys_muser: currentUserId,
     sys_valid: 1,
     sys_batchid: generateUUID(),
     sys_epsid: generateUUID(),

@@ -3,6 +3,7 @@ import type { FileItem } from '../lib/types';
 import type { FileRow } from './apiService';
 import { storageService } from './storageService';
 import * as apiService from './apiService';
+import { getCurrentUserId } from './core/apiClient';
 
 const FILE_TYPE_DIMENSION = '文件类型';
 const LOCALSTORAGE_KEY = 'metafile_files';
@@ -162,6 +163,7 @@ export const fileService = {
    */
   async seedMockData(): Promise<void> {
     const now = new Date().toISOString();
+    const currentUserId = getCurrentUserId(undefined, 'seed');
 
     const fileRows = mockFiles.map((f, i) => ({
       WJMC: f.name,
@@ -171,9 +173,9 @@ export const fileService = {
       BZ: `种子数据 - ${f.attributes['文件类型']?.join(', ') || ''}`,
       XuHao: String(i + 1),
       sys_id: f.id,
-      sys_user: 'seed',
+      sys_user: currentUserId,
       sys_date: now,
-      sys_muser: 'seed',
+      sys_muser: currentUserId,
       sys_mdate: now,
       sys_valid: 1,
       sys_batchid: apiService.generateUUID(),
@@ -233,6 +235,7 @@ export const fileService = {
     for (const file of changedFiles) {
       try {
         const now = new Date().toISOString();
+        const currentUserId = getCurrentUserId(undefined, 'uploader');
         const updated = await apiService.updateFileRecord(file.id, {
           WJMC: file.name,
           WJLX: file.type.toUpperCase(),
@@ -240,9 +243,9 @@ export const fileService = {
           GXRQ: file.updatedAt,
           BZ: '前端上传',
           XuHao: '1',
-          sys_user: 'uploader',
+          sys_user: currentUserId,
           sys_date: now,
-          sys_muser: 'uploader',
+          sys_muser: currentUserId,
           sys_mdate: now,
           sys_valid: 1,
           sys_batchid: apiService.generateUUID(),
@@ -258,9 +261,9 @@ export const fileService = {
             BZ: '前端上传',
             XuHao: '1',
             sys_id: file.id,
-            sys_user: 'uploader',
+            sys_user: currentUserId,
             sys_date: now,
-            sys_muser: 'uploader',
+            sys_muser: currentUserId,
             sys_mdate: now,
             sys_valid: 1,
             sys_batchid: apiService.generateUUID(),

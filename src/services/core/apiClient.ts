@@ -48,22 +48,51 @@ export function isUnauthorizedTextResponse(text: string): boolean {
 export function hasPlatformLoginCookies(cookieString?: string): boolean {
   if (typeof document === 'undefined' && cookieString === undefined) return false;
   const source = cookieString ?? document.cookie;
-  const cookies = new Map(
-    source
+  const cookies = parseCookieString(source);
+
+  return ['ud', 'uid', 'un'].every((name) => Boolean(cookies.get(name)));
+}
+
+function parseCookieString(cookieString: string): Map<string, string> {
+  return new Map(
+    cookieString
       .split(';')
       .map((part) => part.trim())
       .filter(Boolean)
       .map((part) => {
         const separatorIndex = part.indexOf('=');
         if (separatorIndex === -1) return [part, ''] as const;
+        const value = decodeCookieValue(part.slice(separatorIndex + 1).trim());
         return [
           part.slice(0, separatorIndex).trim(),
-          part.slice(separatorIndex + 1).trim(),
+          value,
         ] as const;
       })
   );
+}
 
-  return ['ud', 'uid', 'un'].every((name) => Boolean(cookies.get(name)));
+function decodeCookieValue(rawValue: string): string {
+  let value = rawValue.replace(/\+/g, ' ');
+  for (let i = 0; i < 2; i += 1) {
+    try {
+      const decoded = decodeURIComponent(value);
+      if (decoded === value) break;
+      value = decoded;
+    } catch {
+      break;
+    }
+  }
+  return value;
+}
+
+export function getPlatformCookieValue(name: string, cookieString?: string): string {
+  if (typeof document === 'undefined' && cookieString === undefined) return '';
+  const source = cookieString ?? document.cookie;
+  return parseCookieString(source).get(name)?.trim() || '';
+}
+
+export function getCurrentUserId(cookieString?: string, fallback = 'metafile'): string {
+  return getPlatformCookieValue('uid', cookieString) || fallback;
 }
 
 /**
