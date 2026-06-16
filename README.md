@@ -1,6 +1,6 @@
 # MetaFile 🌟
 
-`MetaFile` 是一个基于 **React 19 + TypeScript + Vite + Tailwind CSS 4** 构建的现代化文件属性与多维度标签管理系统。项目界面设计汲取了 Linear、Notion 等主流 SaaS 系统的专业极简风格，兼具丰富的色彩搭配、流畅的交互动画及响应式布局，提供一流的用户体验（UI/UX）。
+`MetaFile` 是一个基于 **React 19 + TypeScript + Vite + Tailwind CSS 3** 构建的现代化文件属性与多维度标签管理系统。项目界面设计汲取了 Linear、Notion 等主流 SaaS 系统的专业极简风格，兼具丰富的色彩搭配、流畅的交互动画及响应式布局，提供一流的用户体验（UI/UX）。
 
 ---
 
@@ -30,7 +30,7 @@
 
 - **核心框架**：[React 19](https://react.dev/) + [TypeScript 5.9](https://www.typescriptlang.org/)
 - **构建工具**：[Vite 8](https://vitejs.dev/)
-- **样式方案**：[Tailwind CSS 4](https://tailwindcss.com/) (极简、现代化的 CSS 框架)
+- **样式方案**：[Tailwind CSS 3](https://tailwindcss.com/) + PostCSS (兼容公司内部旧版浏览器环境)
 - **状态管理**：[Zustand 5](https://github.com/pmndrs/zustand)
 - **数据库**：[sql.js 1.14](https://sql.js.org/) (SQLite WASM)
 - **图标库**：[Lucide React](https://lucide.dev/)
@@ -71,6 +71,8 @@ Metafile/
 │   ├── App.tsx                 # 单页入口与全局交互总控
 │   └── main.tsx                # React 挂载入口
 ├── .env.example                # 环境变量配置模板 (敏感凭证请在此配置)
+├── postcss.config.cjs          # Tailwind CSS 3 / Autoprefixer 配置
+├── tailwind.config.cjs         # Tailwind 主题、内容扫描与 safelist 配置
 ├── vite.config.ts              # Vite 配置文件
 └── tsconfig.json               # TypeScript 配置文件
 ```
@@ -123,6 +125,18 @@ npm run dev
 npm run build
 ```
 编译完成后，静态文件将输出至 `dist` 目录中。
+
+### 6. 部署静态文件
+
+将 `dist` 目录中的内容部署到 Web 服务器站点根目录即可。项目的 Vite `base` 配置为 `./`，可支持部署在非根路径下的静态目录。
+
+如果使用 Nginx 部署并启用前端路由，建议配置回退：
+
+```nginx
+try_files $uri $uri/ /index.html;
+```
+
+> 为兼容公司内部平台浏览器，项目已从 Tailwind CSS 4 降级到 Tailwind CSS 3，并移除了 Tailwind 4 产物中可能出现的 `oklch`、`@property`、`color-mix` 等较新的 CSS 语法。
 
 ---
 

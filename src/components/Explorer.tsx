@@ -102,6 +102,9 @@ export function Explorer({
       case '密级': return { text: 'text-amber-500', fill: 'fill-amber-100', bg: 'bg-amber-50', border: 'border-amber-200' };
       case '年份': return { text: 'text-green-500', fill: 'fill-green-100', bg: 'bg-green-50', border: 'border-green-200' };
       case '项目': return { text: 'text-purple-500', fill: 'fill-purple-100', bg: 'bg-purple-50', border: 'border-purple-200' };
+      case '档案类别': return { text: 'text-indigo-500', fill: 'fill-indigo-100', bg: 'bg-indigo-50', border: 'border-indigo-200' };
+      case '档案分类': return { text: 'text-cyan-600', fill: 'fill-cyan-100', bg: 'bg-cyan-50', border: 'border-cyan-200' };
+      case '状态': return { text: 'text-emerald-600', fill: 'fill-emerald-100', bg: 'bg-emerald-50', border: 'border-emerald-200' };
       case '文件类型': return { text: 'text-rose-500', fill: 'fill-rose-100', bg: 'bg-rose-50', border: 'border-rose-200' };
       default: return { text: 'text-gray-500', fill: 'fill-gray-100', bg: 'bg-gray-50', border: 'border-gray-200' };
     }
@@ -208,7 +211,7 @@ export function Explorer({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-6 pb-6">
+      <div className="flex-1 overflow-y-auto px-6 pb-6 pt-4">
         {/* Render Folders only if NOT in Search Mode */}
         {!isSearchMode && folders.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-5 mb-8">
@@ -222,7 +225,7 @@ export function Explorer({
                   key={folder.name}
                   onClick={() => enterFolder(folder.name)}
                   className={cn(
-                    "flex min-h-[148px] flex-col gap-3 rounded-2xl border p-5 cursor-pointer transition-all shadow-sm hover:-translate-y-0.5 hover:shadow-md",
+                    "flex min-h-[148px] flex-col gap-3 rounded-2xl border p-5 cursor-pointer transition-all shadow-sm hover:shadow-md",
                     colors.bg,
                     colors.border
                   )}
