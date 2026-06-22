@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GripVertical, FolderTree, Building, Target, FileType, RotateCcw, Settings, ChevronDown } from 'lucide-react';
+import { GripVertical, FolderTree, Target, RotateCcw, Settings, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface SidebarProps {
@@ -81,10 +81,6 @@ export function Sidebar({ dimensionOrder, setDimensionOrder, availableDimensions
     }
   };
 
-  const applyPreset = (preset: string[]) => {
-    setDimensionOrder(preset);
-  };
-
   return (
     <div className="w-64 border-r border-border bg-[#FBFBFA] flex flex-col h-full text-sm">
       <div className="p-4 border-b border-border font-medium flex items-center gap-2 text-primary">
@@ -93,33 +89,6 @@ export function Sidebar({ dimensionOrder, setDimensionOrder, availableDimensions
       </div>
 
       <div className="p-4 flex-1 overflow-y-auto">
-        <div className="mb-6">
-          <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">预设视图</h3>
-          <div className="space-y-1">
-            <button 
-              onClick={() => applyPreset(['部门', '密级'])}
-              className="w-full text-left px-3 py-2 rounded-md hover:bg-accent hover:text-primary transition-colors flex items-center gap-2 text-text-secondary"
-            >
-              <Building className="w-4 h-4" />
-              按行政分类 (部门&gt;密级)
-            </button>
-            <button 
-              onClick={() => applyPreset(['项目', '文件类型'])}
-              className="w-full text-left px-3 py-2 rounded-md hover:bg-accent hover:text-primary transition-colors flex items-center gap-2 text-text-secondary"
-            >
-              <Target className="w-4 h-4" />
-              按项目管理 (项目&gt;类型)
-            </button>
-            <button 
-              onClick={() => applyPreset(['密级', '部门'])}
-              className="w-full text-left px-3 py-2 rounded-md hover:bg-accent hover:text-primary transition-colors flex items-center gap-2 text-text-secondary"
-            >
-              <FileType className="w-4 h-4" />
-              涉密检查视角
-            </button>
-          </div>
-        </div>
-
         <div className="mb-8">
           <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">维度编排区 (拖拽排序)</h3>
           <div 

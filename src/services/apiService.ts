@@ -310,6 +310,44 @@ export async function ensureTag(whid: string, bqz: string): Promise<string> {
   throw new Error(`创建标签失败: ${bqz} (${JSON.stringify(insertResult)})`);
 }
 
+export async function updateTag(sys_id: string, bqz: string): Promise<boolean> {
+  const result = await apiClient({
+    id: SECTION_IDS.TAGS,
+    mode: 'update',
+    _p_data: encodeData({ updated: [{ sys_id, BQZ: bqz }] }),
+  });
+  return result.STATUS === 'Success' || result.STATUS === 'OK';
+}
+
+export async function deleteTagWithRelations(tagId: string): Promise<boolean> {
+  const fileTagsResult = await apiClient({
+    id: SECTION_IDS.FILE_TAGS,
+    mode: 'query',
+    where: JSON.stringify({ BQID: tagId }),
+    _pageindex: '1',
+    _pagesize: '10000',
+  });
+  const fileTags = fileTagsResult.ROWS || [];
+
+  if (fileTags.length > 0) {
+    const removeFileTagsResult = await apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'update',
+      _p_data: encodeData({ deleted: fileTags.map((r: any) => ({ sys_id: r.sys_id })) }),
+    });
+    if (!(removeFileTagsResult.STATUS === 'Success' || removeFileTagsResult.STATUS === 'OK')) {
+      return false;
+    }
+  }
+
+  const removeTagResult = await apiClient({
+    id: SECTION_IDS.TAGS,
+    mode: 'update',
+    _p_data: encodeData({ deleted: [{ sys_id: tagId }] }),
+  });
+  return removeTagResult.STATUS === 'Success' || removeTagResult.STATUS === 'OK';
+}
+
 /**
  * 查询所有标签（含维度名称信息）
  */
@@ -456,19 +494,60 @@ export async function upsertPreference(prefs: {
  * D_WJGL_WH / D_WJGL_BQ / D_WJGL_WJBQ
  */
 const syncLocks = new Map<string, Promise<void>>();
+const SYNC_RETRY_DELAYS_MS = [300, 900, 1800];
+
+function isRetriableSyncError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('502') ||
+    message.includes('503') ||
+    message.includes('504') ||
+    message.includes('Bad Gateway') ||
+    message.includes('Gateway Timeout') ||
+    message.includes('Failed to fetch') ||
+    message.includes('NetworkError')
+  );
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function syncAttributesWithRetry(
+  fileId: string,
+  attributes: Record<string, string[]>
+): Promise<void> {
+  for (let attempt = 0; attempt <= SYNC_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await _syncAttributesInner(fileId, attributes);
+      return;
+    } catch (error) {
+      if (attempt >= SYNC_RETRY_DELAYS_MS.length || !isRetriableSyncError(error)) {
+        throw error;
+      }
+      await wait(SYNC_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
 
 export async function syncAttributes(
   fileId: string,
   attributes: Record<string, string[]>
 ): Promise<void> {
   const currentLock = syncLocks.get(fileId) || Promise.resolve();
-  const nextLock = currentLock.then(async () => {
-    await _syncAttributesInner(fileId, attributes);
+  const nextLock = currentLock.catch(() => undefined).then(async () => {
+    await syncAttributesWithRetry(fileId, attributes);
   }).catch((e) => {
     console.error('[syncAttributes] 同步队列异常:', e);
     throw e;
   });
   syncLocks.set(fileId, nextLock);
+  const clearLock = () => {
+    if (syncLocks.get(fileId) === nextLock) {
+      syncLocks.delete(fileId);
+    }
+  };
+  void nextLock.then(clearLock, clearLock);
   return nextLock;
 }
 
@@ -810,7 +889,7 @@ export async function auditFileTagRelations(): Promise<{
 if (typeof window !== 'undefined') {
   (window as any).apiService = {
     queryFiles, insertFileRecord, insertFileRecords, updateFileRecord, deleteFileRecord,
-    queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, queryAllTags,
+    queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, updateTag, deleteTagWithRelations, queryAllTags,
     queryFileTags, removeAllFileTags, deleteFileWithRelations,
     getPreference, upsertPreference, syncAttributes, loadFileAttributes, loadAllFileAttributes,
     auditFileTagRelations

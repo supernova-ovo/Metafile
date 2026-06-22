@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { X, Plus, Network, Tag, Calendar, Building, Briefcase, FileType, CheckCircle2, FileText, FileSpreadsheet, Image, Presentation, File as FileIcon, Trash2, ExternalLink, Download } from 'lucide-react';
 import type { FileItem } from '../lib/types';
 import { findPathsForFile } from '../lib/tree';
+import { RenameFileName } from './RenameFileName';
 
 // Linear style precise tag coloring
 const getTagStyle = (tagName: string) => {
@@ -62,7 +63,7 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
   const [searchParams, setSearchParams] = useSearchParams();
   
   const inputRef = useRef<HTMLInputElement>(null);
-  const isSubmittingRef = useRef(false);
+  const skipNextBlurSubmitRef = useRef(false);
 
   useEffect(() => {
     if (newTagInput.dim && inputRef.current) {
@@ -71,6 +72,7 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
   }, [newTagInput.dim]);
 
   useEffect(() => {
+    skipNextBlurSubmitRef.current = false;
     setForceVisibleDims(new Set());
     setNewTagInput({ dim: '', val: '' });
     setShowAddDimMenu(false);
@@ -103,21 +105,28 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
     onUpdateAttributes(selectedFile.id, updatedAttrs);
   };
 
+  const beginAddingTag = (dim: string) => {
+    skipNextBlurSubmitRef.current = false;
+    setNewTagInput({ dim, val: '' });
+  };
+
+  const cancelAddingTag = () => {
+    skipNextBlurSubmitRef.current = false;
+    setNewTagInput({ dim: '', val: '' });
+  };
+
   const handleAddTag = (dim: string, forceVal?: string) => {
-    if (isSubmittingRef.current) return;
     const valToAdd = (forceVal !== undefined ? forceVal : newTagInput.val).trim();
     if (!valToAdd) {
-      setNewTagInput({ dim: '', val: '' });
+      cancelAddingTag();
       return;
     }
     const updatedAttrs = { ...selectedFile.attributes };
-    if (!updatedAttrs[dim]) {
-      updatedAttrs[dim] = [];
-    }
+    updatedAttrs[dim] = [...(updatedAttrs[dim] || [])];
     if (!updatedAttrs[dim].includes(valToAdd)) {
       updatedAttrs[dim].push(valToAdd);
     }
-    isSubmittingRef.current = true;  // 标记：已通过 Enter/点击 提交，阻止 onBlur 重复触发
+    skipNextBlurSubmitRef.current = true;  // Only suppress a follow-up blur submit from this same edit.
     onUpdateAttributes(selectedFile.id, updatedAttrs);
     setNewTagInput({ dim: '', val: '' });
   };
@@ -147,9 +156,13 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
           {getFileIcon(selectedFile.type)}
         </div>
         <div className="flex-1 min-w-0">
-          <h2 className="font-semibold text-gray-900 text-[13px] leading-tight break-all mb-1" title={selectedFile.name}>
-            {selectedFile.name}
-          </h2>
+          <RenameFileName
+            file={selectedFile}
+            siblingFiles={allFiles}
+            className="mb-1 max-w-full"
+            textClassName="font-semibold text-gray-900 text-[13px] leading-tight"
+            inputClassName="text-[13px]"
+          />
           <div className="text-[11px] text-gray-500 font-medium">
             <span>{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</span>
             <span className="mx-1.5">•</span>
@@ -222,14 +235,15 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
                           onChange={(e) => setNewTagInput({ dim, val: e.target.value })}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') handleAddTag(dim, newTagInput.val);
-                            if (e.key === 'Escape') setNewTagInput({ dim: '', val: '' });
+                            if (e.key === 'Escape') cancelAddingTag();
                           }}
-                          onBlur={() => {
-                            if (isSubmittingRef.current) {
-                              isSubmittingRef.current = false;  // 清除 flag，跳过本次 onBlur
+                          onBlur={(e) => {
+                            if (skipNextBlurSubmitRef.current) {
+                              skipNextBlurSubmitRef.current = false;
                               return;
                             }
-                            setTimeout(() => handleAddTag(dim, newTagInput.val), 150);
+                            const value = e.currentTarget.value;
+                            setTimeout(() => handleAddTag(dim, value), 150);
                           }}
                           className="flex-1 bg-transparent border-none p-0 focus:ring-0 text-xs text-gray-800 outline-none w-full h-6 placeholder-gray-300"
                           placeholder="Type a tag..."
@@ -260,7 +274,7 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
                     ) : (
                       !isComputed && (
                         <button 
-                          onClick={() => setNewTagInput({ dim, val: '' })}
+                          onClick={() => beginAddingTag(dim)}
                           className="opacity-0 group-hover:opacity-100 text-gray-400 hover:text-gray-800 hover:bg-gray-100 transition-all rounded p-0.5 h-5 flex items-center justify-center -ml-0.5"
                           title="Add tag"
                         >
@@ -294,7 +308,7 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
                       onClick={() => {
                         setForceVisibleDims(prev => new Set(prev).add(dim));
                         setShowAddDimMenu(false);
-                        setNewTagInput({ dim, val: '' });
+                        beginAddingTag(dim);
                       }}
                       className="w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors"
                     >

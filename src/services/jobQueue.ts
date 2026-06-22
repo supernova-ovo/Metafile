@@ -2,6 +2,7 @@ import { useJobStore } from '../store/useJobStore';
 import { useFileStore } from '../store/useFileStore';
 import { UPLOAD_URL, apiClient, generateUUID, encodeData, getCurrentUserId } from './core/apiClient';
 import * as apiService from './apiService';
+import { fileService } from './fileService';
 
 const SECTION_ID_FILES = '76c22773-66cb-a51c-359b-5a2872169266';
 
@@ -104,6 +105,7 @@ export const jobQueue = {
       update(jobId, { progress: 80 });
 
       await syncFileTags(currentJob);
+      fileService.clearPendingAttributeSync([jobId]);
       update(jobId, { status: 'success', progress: 100 });
 
     } catch (error: any) {

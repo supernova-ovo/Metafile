@@ -7,6 +7,8 @@ import { getCurrentUserId } from './core/apiClient';
 
 const FILE_TYPE_DIMENSION = '文件类型';
 const LOCALSTORAGE_KEY = 'metafile_files';
+const PENDING_ATTRIBUTE_SYNC_KEY = 'metafile_pending_attribute_sync';
+const PENDING_FILE_RENAME_KEY = 'metafile_pending_file_rename';
 const SAVE_DEBOUNCE_MS = 500;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -58,10 +60,68 @@ function getFileFingerprint(file: FileItem): string {
   });
 }
 
-function markFilesAsSynced(files: FileItem[]) {
+function getPendingAttributeSyncIds(): Set<string> {
+  return new Set(storageService.getJson<string[]>(PENDING_ATTRIBUTE_SYNC_KEY, []));
+}
+
+function savePendingAttributeSyncIds(ids: Set<string>) {
+  if (ids.size === 0) {
+    storageService.remove(PENDING_ATTRIBUTE_SYNC_KEY);
+    return;
+  }
+  storageService.setJson(PENDING_ATTRIBUTE_SYNC_KEY, [...ids]);
+}
+
+function markPendingAttributeSync(fileIds: string[]) {
+  if (fileIds.length === 0) return;
+  const ids = getPendingAttributeSyncIds();
+  fileIds.forEach((id) => ids.add(id));
+  savePendingAttributeSyncIds(ids);
+}
+
+function clearPendingAttributeSync(fileIds: string[]) {
+  if (fileIds.length === 0) return;
+  const ids = getPendingAttributeSyncIds();
+  fileIds.forEach((id) => ids.delete(id));
+  savePendingAttributeSyncIds(ids);
+}
+
+function getPendingFileRenames(): Record<string, string> {
+  return storageService.getJson<Record<string, string>>(PENDING_FILE_RENAME_KEY, {});
+}
+
+function savePendingFileRenames(pendingRenames: Record<string, string>) {
+  if (Object.keys(pendingRenames).length === 0) {
+    storageService.remove(PENDING_FILE_RENAME_KEY);
+    return;
+  }
+  storageService.setJson(PENDING_FILE_RENAME_KEY, pendingRenames);
+}
+
+function markPendingFileRename(fileId: string, fileName: string) {
+  const pendingRenames = getPendingFileRenames();
+  pendingRenames[fileId] = fileName;
+  savePendingFileRenames(pendingRenames);
+}
+
+function clearPendingFileRename(fileIds: string[]) {
+  if (fileIds.length === 0) return;
+  const pendingRenames = getPendingFileRenames();
+  fileIds.forEach((id) => delete pendingRenames[id]);
+  savePendingFileRenames(pendingRenames);
+}
+
+function hasDomainAttributes(attributes: Record<string, string[]>): boolean {
+  return Object.entries(attributes).some(([key, values]) => (
+    key !== FILE_TYPE_DIMENSION && values.length > 0
+  ));
+}
+
+function markFilesAsSynced(files: FileItem[], options?: { excludeIds?: Set<string> }) {
   lastSyncedFingerprints.clear();
   hydratedAttributeFileIds.clear();
   for (const file of files) {
+    if (options?.excludeIds?.has(file.id)) continue;
     lastSyncedFingerprints.set(file.id, getFileFingerprint(file));
   }
 }
@@ -104,6 +164,17 @@ export const fileService = {
    */
   async initFromDb(): Promise<FileItem[]> {
     try {
+      const cachedFiles = storageService.getJson<FileItem[] | null>(LOCALSTORAGE_KEY, null);
+      const cachedFilesById = new Map(
+        (cachedFiles ? normalizeFileIds(cachedFiles) : []).map((file) => [file.id, file])
+      );
+      const pendingAttributeSyncIds = getPendingAttributeSyncIds();
+      const pendingFileRenames = getPendingFileRenames();
+      const restoredPendingIds = new Set<string>();
+      const restoredPendingRenameIds = new Set<string>();
+      const resolvedPendingIds: string[] = [];
+      const resolvedPendingRenameIds: string[] = [];
+
       const { ROWS, TOTAL } = await apiService.queryFiles(1, 500);
       // console.log(`[DB] queryFiles 返回: TOTAL=${TOTAL}, ROWS=${ROWS.length}`);
 
@@ -126,24 +197,67 @@ export const fileService = {
 
       // 初始化走批量属性回填：保证首屏文件都带标签关系，避免逐文件 N+1。
       const files = rowsToFileItems(ROWS);
+      for (const f of files) {
+        const pendingName = pendingFileRenames[f.id];
+        if (!pendingName) continue;
+        if (f.name === pendingName) {
+          resolvedPendingRenameIds.push(f.id);
+          continue;
+        }
+
+        f.name = pendingName;
+        restoredPendingRenameIds.add(f.id);
+      }
+
       try {
         const allAttrs = await apiService.loadAllFileAttributes();
         for (const f of files) {
           const attrs = allAttrs[f.id];
+          const backendAttrs = attrs
+            ? {
+                ...attrs,
+                [FILE_TYPE_DIMENSION]: [(f.type || '').toUpperCase()],
+              }
+            : f.attributes;
+          const cachedFile = cachedFilesById.get(f.id);
+
+          if (pendingAttributeSyncIds.has(f.id)) {
+            const cachedAttrs = cachedFile?.attributes || {};
+            if (hasDomainAttributes(cachedAttrs) && !hasDomainAttributes(backendAttrs)) {
+              f.attributes = cloneAttributes(cachedAttrs);
+              restoredPendingIds.add(f.id);
+              hydratedAttributeFileIds.add(f.id);
+              continue;
+            }
+            resolvedPendingIds.push(f.id);
+          }
+
           if (attrs) {
-            f.attributes = {
-              ...attrs,
-              [FILE_TYPE_DIMENSION]: [(f.type || '').toUpperCase()],
-            };
+            f.attributes = backendAttrs;
             hydratedAttributeFileIds.add(f.id);
           }
         }
       } catch (e) {
         console.warn('[DB] 批量回填文件属性失败，回退懒加载模式:', e);
+        for (const f of files) {
+          if (!pendingAttributeSyncIds.has(f.id)) continue;
+          const cachedFile = cachedFilesById.get(f.id);
+          if (cachedFile && hasDomainAttributes(cachedFile.attributes)) {
+            f.attributes = cloneAttributes(cachedFile.attributes);
+            restoredPendingIds.add(f.id);
+            hydratedAttributeFileIds.add(f.id);
+          }
+        }
       }
       storageService.setJson(LOCALSTORAGE_KEY, files);
       // 关键：将初始化结果标记为同步基线，避免首次后续保存误删后端已有标签关联。
-      markFilesAsSynced(files);
+      const restoredPendingFileIds = new Set([...restoredPendingIds, ...restoredPendingRenameIds]);
+      markFilesAsSynced(files, { excludeIds: restoredPendingFileIds });
+      clearPendingAttributeSync(resolvedPendingIds);
+      clearPendingFileRename(resolvedPendingRenameIds);
+      if (restoredPendingFileIds.size > 0) {
+        void this.saveToDbAsync(files).catch(e => console.warn('[DB] 待同步属性补偿写入失败:', e));
+      }
       if (typeof import.meta !== 'undefined' && import.meta.env?.DEV) {
         apiService.auditFileTagRelations()
           .then(() => { /* console.log('[DB_AUDIT] 文件-标签关联健康度') */ })
@@ -271,8 +385,10 @@ export const fileService = {
           });
         }
 
+        clearPendingFileRename([file.id]);
         await apiService.syncAttributes(file.id, file.attributes);
         lastSyncedFingerprints.set(file.id, getFileFingerprint(file));
+        clearPendingAttributeSync([file.id]);
       } catch (err) {
         console.warn('[DB] 文件写入失败:', file.name, err);
       }
@@ -294,14 +410,44 @@ export const fileService = {
     });
 
     hydratedAttributeFileIds.add(fileId);
+    markPendingAttributeSync([fileId]);
 
     const targetFile = updatedFiles.find(f => f.id === fileId);
-    if (targetFile) {
-      lastSyncedFingerprints.set(fileId, getFileFingerprint(targetFile));
-    }
 
     apiService.syncAttributes(fileId, newAttributes)
+      .then(() => {
+        if (targetFile) {
+          lastSyncedFingerprints.set(fileId, getFileFingerprint(targetFile));
+        }
+        clearPendingAttributeSync([fileId]);
+      })
       .catch(e => console.warn('[DB]', e));
+
+    return updatedFiles;
+  },
+
+  renameFile(files: FileItem[], fileId: string, nextName: string) {
+    const updatedFiles = files.map((file) => {
+      if (file.id !== fileId) return file;
+      return { ...file, name: nextName };
+    });
+
+    const targetFile = updatedFiles.find(f => f.id === fileId);
+    markPendingFileRename(fileId, nextName);
+
+    const now = new Date().toISOString();
+    apiService.updateFileRecord(fileId, {
+      WJMC: nextName,
+      sys_muser: getCurrentUserId(undefined, 'uploader'),
+      sys_mdate: now,
+    })
+      .then(() => {
+        if (targetFile) {
+          lastSyncedFingerprints.set(fileId, getFileFingerprint(targetFile));
+        }
+        clearPendingFileRename([fileId]);
+      })
+      .catch(e => console.warn('[DB] 文件重命名同步失败:', e));
 
     return updatedFiles;
   },
@@ -310,10 +456,19 @@ export const fileService = {
     for (const file of files) {
       try {
         await apiService.syncAttributes(file.id, file.attributes);
+        clearPendingAttributeSync([file.id]);
       } catch (e) {
         console.warn('[DB] 上传后属性同步失败:', file.name, e);
       }
     }
+  },
+
+  markPendingAttributeSync(fileIds: string[]) {
+    markPendingAttributeSync(fileIds);
+  },
+
+  clearPendingAttributeSync(fileIds: string[]) {
+    clearPendingAttributeSync(fileIds);
   },
 
   async hydrateFileAttributes(files: FileItem[], fileId: string): Promise<FileItem[]> {
@@ -341,6 +496,8 @@ export const fileService = {
     if (!deleted) {
       throw new Error('删除后端文件记录失败');
     }
+    clearPendingAttributeSync([fileId]);
+    clearPendingFileRename([fileId]);
     return true;
   },
 
@@ -374,6 +531,8 @@ export const fileService = {
    */
   resetFiles() {
     storageService.remove(LOCALSTORAGE_KEY);
+    storageService.remove(PENDING_ATTRIBUTE_SYNC_KEY);
+    storageService.remove(PENDING_FILE_RENAME_KEY);
     return cloneMockFiles();
   },
 };

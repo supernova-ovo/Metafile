@@ -7,6 +7,7 @@ import { getAllFilesInFolder } from '../lib/tree';
 import { Fragment, useMemo } from 'react';
 import { useFileStore } from '../store/useFileStore';
 import { selectFilteredFiles } from '../store/selectors';
+import { RenameFileName } from './RenameFileName';
 
 interface ExplorerProps {
   currentFolder: VirtualFolder;
@@ -327,9 +328,13 @@ export function Explorer({
                       <td className="p-3 px-5 flex flex-col gap-1.5 py-4">
                         <div className="flex items-center gap-3">
                           {getIconForType(file.type)}
-                          <span className={cn("font-medium", selectedFileId === file.id ? "text-indigo-700 font-semibold" : "")}>
-                            {file.name}
-                          </span>
+                          <RenameFileName
+                            file={file}
+                            siblingFiles={displayFiles}
+                            className="flex-1"
+                            textClassName={cn("font-medium", selectedFileId === file.id ? "text-indigo-700 font-semibold" : "")}
+                            onStartEdit={() => onSelectFile(file.id)}
+                          />
                         </div>
                         {isSearchMode && (
                           <div className="flex flex-wrap gap-1.5 ml-9 mt-0.5">

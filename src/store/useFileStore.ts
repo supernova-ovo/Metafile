@@ -22,6 +22,7 @@ export interface FileStoreState {
   addFiles: (files: FileItem[], skipDbSync?: boolean) => void;
   updateFileUrl: (fileId: string, url: string) => void;
   updateFileAttributes: (fileId: string, attributes: Record<string, string[]>) => void;
+  renameFile: (fileId: string, nextName: string) => void;
   deleteFile: (fileId: string) => void;
   resetFiles: () => void;
   
@@ -88,6 +89,9 @@ export const useFileStore = create<FileStoreState>((set, get) => {
     const indexes = buildIndexes(files);
     set({ files, indexes });
     
+    if (skipDbSync) {
+      fileService.markPendingAttributeSync(newFiles.map(file => file.id));
+    }
     fileService.saveFiles(Object.values(files), { skipDbSync });
   },
 
@@ -121,6 +125,21 @@ export const useFileStore = create<FileStoreState>((set, get) => {
     updatedFilesArray.forEach(f => files[f.id] = f);
     const indexes = buildIndexes(files);
     
+    set({ files, indexes });
+    fileService.saveFiles(updatedFilesArray);
+  },
+
+  renameFile: (fileId, nextName) => {
+    const state = get();
+    const file = state.files[fileId];
+    if (!file || file.name === nextName) return;
+
+    const updatedFilesArray = fileService.renameFile(Object.values(state.files), fileId, nextName);
+
+    const files: FileEntities = {};
+    updatedFilesArray.forEach(f => files[f.id] = f);
+    const indexes = buildIndexes(files);
+
     set({ files, indexes });
     fileService.saveFiles(updatedFilesArray);
   },

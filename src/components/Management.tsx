@@ -1,8 +1,8 @@
 import React, { useState, useMemo } from 'react';
 import { ArrowLeft, Edit2, Merge, Trash2, ChevronDown, Plus, Tag, AlertTriangle, Loader2, X } from 'lucide-react';
 import type { FileItem } from '../lib/types';
-import type { DimRow } from '../services/apiService';
-import { ensureDimension, updateDimension, deleteDimensionWithRelations } from '../services/apiService';
+import type { DimRow, TagRow } from '../services/apiService';
+import { deleteDimensionWithRelations, deleteTagWithRelations, ensureDimension, ensureTag, queryTagsByDim, updateDimension, updateTag } from '../services/apiService';
 
 interface ManagementProps {
   files: FileItem[];
@@ -16,7 +16,14 @@ interface ManagementProps {
 export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensions, setDimensions, onClose }: ManagementProps) {
   const [selectedDimension, setSelectedDimension] = useState<string>(dimensions[0]?.WHMC || '');
   const [isExpanded, setIsExpanded] = useState(true);
-  const [tagToDelete, setTagToDelete] = useState<string | null>(null);
+  const [tagRows, setTagRows] = useState<TagRow[]>([]);
+  const [isTagLoading, setIsTagLoading] = useState(false);
+  const [tagToDelete, setTagToDelete] = useState<{ name: string; sys_id?: string; count: number } | null>(null);
+  const [tagModalConfig, setTagModalConfig] = useState<{ isOpen: boolean; mode: 'create' | 'edit'; tagId?: string; initialName?: string }>({ isOpen: false, mode: 'create' });
+  const [tagInput, setTagInput] = useState('');
+  const [isTagSubmitting, setIsTagSubmitting] = useState(false);
+  const [isTagDeleting, setIsTagDeleting] = useState(false);
+  const [tagError, setTagError] = useState<string | null>(null);
 
   const [dimModalConfig, setDimModalConfig] = useState<{ isOpen: boolean; mode: 'create' | 'edit'; dimId?: string; initialName?: string }>({ isOpen: false, mode: 'create' });
   const [dimInput, setDimInput] = useState('');
@@ -105,24 +112,63 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
     }
   };
 
+  const selectedDimRow = useMemo(
+    () => dimensions.find(d => d.WHMC === selectedDimension),
+    [dimensions, selectedDimension]
+  );
+
+  React.useEffect(() => {
+    if (!selectedDimRow?.sys_id) {
+      setTagRows([]);
+      return;
+    }
+
+    let cancelled = false;
+    setIsTagLoading(true);
+    setTagError(null);
+
+    queryTagsByDim(selectedDimRow.sys_id)
+      .then((rows) => {
+        if (!cancelled) setTagRows(rows);
+      })
+      .catch((err: any) => {
+        if (!cancelled) {
+          setTagRows([]);
+          setTagError(err.message || '加载标签失败');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsTagLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDimRow?.sys_id]);
+
   // Compute tag statistics for the selected dimension
   const tagStats = useMemo(() => {
     if (!selectedDimension) return [];
     
-    const stats: Record<string, number> = {};
+    const stats: Record<string, { name: string; count: number; sys_id?: string }> = {};
+    tagRows.forEach(tag => {
+      if (!tag.BQZ) return;
+      stats[tag.BQZ] = { name: tag.BQZ, count: 0, sys_id: tag.sys_id };
+    });
+
     files.forEach(file => {
       const tags = file.attributes[selectedDimension];
       if (tags && tags.length > 0) {
         tags.forEach(tag => {
-          stats[tag] = (stats[tag] || 0) + 1;
+          if (!stats[tag]) stats[tag] = { name: tag, count: 0 };
+          stats[tag].count += 1;
         });
       }
     });
 
-    return Object.entries(stats)
-      .map(([name, count]) => ({ name, count }))
+    return Object.values(stats)
       .sort((a, b) => b.count - a.count); // Sort by usage descending
-  }, [files, selectedDimension]);
+  }, [files, selectedDimension, tagRows]);
 
   React.useEffect(() => {
     if (!selectedDimension && dimensions.length > 0) {
@@ -130,31 +176,65 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
     }
   }, [dimensions, selectedDimension]);
 
-  const handleRename = (oldName: string) => {
-    const newName = window.prompt(`请为标签「${oldName}」输入新的名称：`, oldName);
-    if (!newName || newName.trim() === '' || newName === oldName) return;
-    
-    const trimmed = newName.trim();
-    
-    // Tag rename updates the tag on all files. This probably should trigger DB sync since file fingerprints change
-    // If the backend has its own logic for renaming tags, we'd call the backend API, then use onFilesChangeWithoutSync.
-    // Currently tag rename is purely local? Wait, if we don't have a backend rename tag API yet, it falls back to DB sync.
-    setFiles(files.map(file => {
-      const currentTags = file.attributes[selectedDimension];
-      if (!currentTags || !currentTags.includes(oldName)) return file;
-      
-      const newTags = currentTags.map(t => (t === oldName ? trimmed : t));
-      // Remove duplicates just in case the new name already existed in this file's tags
-      const uniqueTags = Array.from(new Set(newTags));
-      
-      return {
-        ...file,
-        attributes: {
-          ...file.attributes,
-          [selectedDimension]: uniqueTags
+  const handleTagSubmit = async () => {
+    const newTag = tagInput.trim();
+    if (!newTag || !selectedDimRow?.sys_id) return;
+
+    const duplicate = tagStats.some(stat => stat.name === newTag && stat.name !== tagModalConfig.initialName);
+    if (duplicate) {
+      setTagError('该标签已存在');
+      return;
+    }
+
+    setIsTagSubmitting(true);
+    setTagError(null);
+    try {
+      if (tagModalConfig.mode === 'create') {
+        const sys_id = await ensureTag(selectedDimRow.sys_id, newTag);
+        setTagRows(prev => [...prev, { sys_id, WHID: selectedDimRow.sys_id!, BQZ: newTag }]);
+      } else if (tagModalConfig.mode === 'edit' && tagModalConfig.initialName) {
+        if (tagModalConfig.tagId) {
+          await updateTag(tagModalConfig.tagId, newTag);
+          setTagRows(prev => prev.map(tag => (
+            tag.sys_id === tagModalConfig.tagId ? { ...tag, BQZ: newTag } : tag
+          )));
         }
-      };
-    }));
+
+        const updatedFiles = files.map(file => {
+          const currentTags = file.attributes[selectedDimension];
+          if (!currentTags || !currentTags.includes(tagModalConfig.initialName!)) return file;
+
+          const renamedTags = currentTags.map(t => (t === tagModalConfig.initialName ? newTag : t));
+          return {
+            ...file,
+            attributes: {
+              ...file.attributes,
+              [selectedDimension]: Array.from(new Set(renamedTags)),
+            },
+          };
+        });
+
+        if (tagModalConfig.tagId && onFilesChangeWithoutSync) {
+          onFilesChangeWithoutSync(updatedFiles);
+        } else {
+          setFiles(updatedFiles);
+        }
+      }
+
+      setTagModalConfig({ isOpen: false, mode: 'create' });
+      setTagInput('');
+    } catch (err: any) {
+      setTagError(err.message || '标签保存失败');
+    } finally {
+      setIsTagSubmitting(false);
+    }
+  };
+
+  const handleRename = (oldName: string) => {
+    const stat = tagStats.find(item => item.name === oldName);
+    setTagInput(oldName);
+    setTagError(null);
+    setTagModalConfig({ isOpen: true, mode: 'edit', tagId: stat?.sys_id, initialName: oldName });
   };
 
   const handleMerge = (sourceName: string) => {
@@ -184,24 +264,45 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
   };
 
   const handleDeleteClick = (tagName: string) => {
-    setTagToDelete(tagName);
+    const stat = tagStats.find(item => item.name === tagName);
+    setTagToDelete({ name: tagName, sys_id: stat?.sys_id, count: stat?.count || 0 });
   };
 
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!tagToDelete) return;
-    setFiles(files.map(file => {
+    setIsTagDeleting(true);
+    setTagError(null);
+    try {
+      if (tagToDelete.sys_id) {
+        await deleteTagWithRelations(tagToDelete.sys_id);
+        setTagRows(prev => prev.filter(tag => tag.sys_id !== tagToDelete.sys_id));
+      }
+
+      const updatedFiles = files.map(file => {
       const currentTags = file.attributes[selectedDimension];
-      if (!currentTags || !currentTags.includes(tagToDelete)) return file;
+      if (!currentTags || !currentTags.includes(tagToDelete.name)) return file;
       
-      return {
-        ...file,
-        attributes: {
-          ...file.attributes,
-          [selectedDimension]: currentTags.filter(t => t !== tagToDelete)
+        const nextTags = currentTags.filter(t => t !== tagToDelete.name);
+        const nextAttrs = { ...file.attributes };
+        if (nextTags.length > 0) {
+          nextAttrs[selectedDimension] = nextTags;
+        } else {
+          delete nextAttrs[selectedDimension];
         }
-      };
-    }));
-    setTagToDelete(null);
+        return { ...file, attributes: nextAttrs };
+      });
+
+      if (tagToDelete.sys_id && onFilesChangeWithoutSync) {
+        onFilesChangeWithoutSync(updatedFiles);
+      } else {
+        setFiles(updatedFiles);
+      }
+      setTagToDelete(null);
+    } catch (err: any) {
+      setTagError(err.message || '标签删除失败');
+    } finally {
+      setIsTagDeleting(false);
+    }
   };
 
   // Deterministic color generation based on string
@@ -316,18 +417,54 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
         {/* Right Pane: Tags */}
         <div className="flex-1 overflow-y-auto bg-white p-8">
           <div className="max-w-4xl mx-auto">
-            <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-              <span className="text-indigo-600 px-3 py-1 bg-indigo-50 rounded-md text-xl">
-                {selectedDimension}
-              </span>
-              维度下的标签
-            </h2>
+            <div className="mb-6 flex items-center justify-between gap-4">
+              <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
+                <span className="text-indigo-600 px-3 py-1 bg-indigo-50 rounded-md text-xl">
+                  {selectedDimension || '未选择维度'}
+                </span>
+                标签值管理
+              </h2>
+              <button
+                onClick={() => {
+                  setTagInput('');
+                  setTagError(null);
+                  setTagModalConfig({ isOpen: true, mode: 'create' });
+                }}
+                disabled={!selectedDimRow || selectedDimension === '文件类型'}
+                className="flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+              >
+                <Plus className="w-4 h-4" />
+                新建标签值
+              </button>
+            </div>
 
-            {tagStats.length === 0 ? (
+            {tagError && (
+              <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                {tagError}
+              </div>
+            )}
+
+            {isTagLoading ? (
+              <div className="flex items-center justify-center gap-2 p-16 text-sm font-medium text-gray-500">
+                <Loader2 className="h-5 w-5 animate-spin text-indigo-500" />
+                正在加载标签值...
+              </div>
+            ) : tagStats.length === 0 ? (
               <div className="flex flex-col items-center justify-center p-16 border-2 border-dashed border-gray-200 rounded-2xl bg-gray-50">
-                <span className="text-4xl mb-4">🏷️</span>
-                <p className="text-gray-500 font-medium">当前维度下暂无标签</p>
-                <p className="text-gray-400 text-sm mt-1">在文件视图中为文件添加该维度标签后即可在此管理</p>
+                <Tag className="w-10 h-10 mb-4 text-gray-300" />
+                <p className="text-gray-500 font-medium">当前维度下暂无标签值</p>
+                <button
+                  onClick={() => {
+                    setTagInput('');
+                    setTagError(null);
+                    setTagModalConfig({ isOpen: true, mode: 'create' });
+                  }}
+                  disabled={!selectedDimRow || selectedDimension === '文件类型'}
+                  className="mt-5 flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-4 py-2 text-sm font-medium text-indigo-600 transition-colors hover:bg-indigo-50 disabled:cursor-not-allowed disabled:text-gray-400"
+                >
+                  <Plus className="w-4 h-4" />
+                  新建标签值
+                </button>
               </div>
             ) : (
               <div className="border border-gray-200 rounded-xl overflow-hidden shadow-sm">
@@ -420,7 +557,8 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
               <div className="text-gray-600 mb-6 leading-relaxed mt-4">
                 <p>确定要从所有文件中移除以下标签吗？</p>
                 <div className="my-4 p-3 bg-gray-50 border border-gray-200 rounded-lg text-center break-all shadow-inner">
-                  <span className="font-semibold text-gray-900 text-lg">「{tagToDelete}」</span>
+                  <span className="font-semibold text-gray-900 text-lg">「{tagToDelete.name}」</span>
+                  <div className="mt-1 text-xs text-gray-500">{tagToDelete.count} 个文件正在使用</div>
                 </div>
                 <div className="text-red-600 text-sm mt-4 bg-red-50 p-3 rounded-md border border-red-100 flex items-start gap-2">
                   <span className="shrink-0 text-base leading-none">⚠️</span>
@@ -431,17 +569,89 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
               <div className="flex items-center justify-end gap-3 mt-8">
                 <button
                   onClick={() => setTagToDelete(null)}
+                  disabled={isTagDeleting}
                   className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-100 rounded-lg transition-colors focus:outline-none"
                 >
                   取消
                 </button>
                 <button
                   onClick={confirmDelete}
-                  className="px-5 py-2 bg-red-500 text-white font-medium hover:bg-red-600 rounded-lg shadow-sm shadow-red-500/20 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
+                  disabled={isTagDeleting}
+                  className="px-5 py-2 bg-red-500 text-white font-medium hover:bg-red-600 rounded-lg shadow-sm shadow-red-500/20 transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 disabled:opacity-60"
                 >
-                  确认删除
+                  {isTagDeleting ? '删除中...' : '确认删除'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tagModalConfig.isOpen && (
+        <div 
+          className="fixed inset-0 z-[110] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200"
+          onClick={() => {
+            if (!isTagSubmitting) setTagModalConfig({ isOpen: false, mode: 'create' });
+          }}
+        >
+          <div 
+            className="w-[420px] overflow-hidden rounded-xl bg-white shadow-xl animate-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border bg-[#FBFBFA] p-4">
+              <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                <Tag className="w-4 h-4 text-indigo-500" />
+                {tagModalConfig.mode === 'create' ? '新建标签值' : '重命名标签值'}
+              </h2>
+              <button
+                onClick={() => setTagModalConfig({ isOpen: false, mode: 'create' })}
+                disabled={isTagSubmitting}
+                className="rounded-md p-1 transition-colors hover:bg-gray-200 disabled:opacity-50"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">所属维度</label>
+                <div className="rounded-md border border-gray-100 bg-gray-50 px-3 py-2 text-sm font-medium text-gray-700">
+                  {selectedDimension}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">标签值名称</label>
+                <input
+                  type="text"
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleTagSubmit()}
+                  autoFocus
+                  className="w-full px-3 py-2 border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="请输入标签值..."
+                  disabled={isTagSubmitting}
+                />
+              </div>
+              {tagError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                  {tagError}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-3 border-t border-border bg-[#FBFBFA] p-4">
+              <button
+                onClick={() => setTagModalConfig({ isOpen: false, mode: 'create' })}
+                disabled={isTagSubmitting}
+                className="rounded-md border border-border px-5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-gray-100 disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleTagSubmit}
+                disabled={isTagSubmitting || !tagInput.trim()}
+                className="flex items-center justify-center gap-2 rounded-md bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50 min-w-[80px]"
+              >
+                {isTagSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : '确认'}
+              </button>
             </div>
           </div>
         </div>
