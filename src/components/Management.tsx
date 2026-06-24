@@ -2,7 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { ArrowLeft, Edit2, Merge, Trash2, ChevronDown, Plus, Tag, AlertTriangle, Loader2, X } from 'lucide-react';
 import type { FileItem } from '../lib/types';
 import type { DimRow, TagRow } from '../services/apiService';
-import { deleteDimensionWithRelations, deleteTagWithRelations, ensureDimension, ensureTag, queryTagsByDim, updateDimension, updateTag } from '../services/apiService';
+import { deleteDimensionWithRelations, deleteTagWithRelations, ensureDimension, ensureTag, mergeTagInto, queryTagsByDim, updateDimension, updateTag } from '../services/apiService';
 
 interface ManagementProps {
   files: FileItem[];
@@ -19,10 +19,13 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
   const [tagRows, setTagRows] = useState<TagRow[]>([]);
   const [isTagLoading, setIsTagLoading] = useState(false);
   const [tagToDelete, setTagToDelete] = useState<{ name: string; sys_id?: string; count: number } | null>(null);
+  const [tagToMerge, setTagToMerge] = useState<{ name: string; sys_id?: string; count: number } | null>(null);
+  const [mergeTargetName, setMergeTargetName] = useState('');
   const [tagModalConfig, setTagModalConfig] = useState<{ isOpen: boolean; mode: 'create' | 'edit'; tagId?: string; initialName?: string }>({ isOpen: false, mode: 'create' });
   const [tagInput, setTagInput] = useState('');
   const [isTagSubmitting, setIsTagSubmitting] = useState(false);
   const [isTagDeleting, setIsTagDeleting] = useState(false);
+  const [isTagMerging, setIsTagMerging] = useState(false);
   const [tagError, setTagError] = useState<string | null>(null);
 
   const [dimModalConfig, setDimModalConfig] = useState<{ isOpen: boolean; mode: 'create' | 'edit'; dimId?: string; initialName?: string }>({ isOpen: false, mode: 'create' });
@@ -170,6 +173,11 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
       .sort((a, b) => b.count - a.count); // Sort by usage descending
   }, [files, selectedDimension, tagRows]);
 
+  const mergeTargetOptions = useMemo(() => {
+    if (!tagToMerge) return [];
+    return tagStats.filter(stat => stat.name !== tagToMerge.name);
+  }, [tagStats, tagToMerge]);
+
   React.useEffect(() => {
     if (!selectedDimension && dimensions.length > 0) {
       setSelectedDimension(dimensions[0].WHMC);
@@ -238,29 +246,77 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
   };
 
   const handleMerge = (sourceName: string) => {
-    const targetName = window.prompt(`你想将标签「${sourceName}」合并到哪个标签？\n（输入目标标签的名称）`);
-    if (!targetName || targetName.trim() === '' || targetName === sourceName) return;
-    
-    const trimmed = targetName.trim();
-    
-    setFiles(files.map(file => {
-      const currentTags = file.attributes[selectedDimension];
-      if (!currentTags || !currentTags.includes(sourceName)) return file;
-      
-      // Remove sourceName, add targetName
-      const newTags = currentTags.filter(t => t !== sourceName);
-      if (!newTags.includes(trimmed)) {
-        newTags.push(trimmed);
+    if (isTagMerging) return;
+    const sourceTag = tagStats.find(item => item.name === sourceName);
+    const firstTarget = tagStats.find(item => item.name !== sourceName);
+    setTagError(null);
+    setTagToMerge({ name: sourceName, sys_id: sourceTag?.sys_id, count: sourceTag?.count || 0 });
+    setMergeTargetName(firstTarget?.name || '');
+  };
+
+  const confirmMerge = async () => {
+    if (!tagToMerge || isTagMerging) return;
+
+    const trimmed = mergeTargetName.trim();
+    if (!trimmed || trimmed === tagToMerge.name) return;
+
+    const sourceTag = tagStats.find(item => item.name === tagToMerge.name);
+    const targetTag = tagStats.find(item => item.name === trimmed);
+    const selectedDim = dimensions.find(dim => dim.WHMC === selectedDimension);
+
+    setIsTagMerging(true);
+    setTagError(null);
+    try {
+      let targetTagId = targetTag?.sys_id;
+      if (!targetTagId && sourceTag?.sys_id && selectedDim?.sys_id) {
+        targetTagId = await ensureTag(selectedDim.sys_id, trimmed);
       }
-      
-      return {
-        ...file,
-        attributes: {
-          ...file.attributes,
-          [selectedDimension]: newTags
+
+      if (sourceTag?.sys_id && targetTagId) {
+        const merged = await mergeTagInto(sourceTag.sys_id, targetTagId);
+        if (!merged) {
+          throw new Error('标签合并失败');
         }
-      };
-    }));
+      }
+
+      const updatedFiles = files.map(file => {
+        const currentTags = file.attributes[selectedDimension];
+        if (!currentTags || !currentTags.includes(tagToMerge.name)) return file;
+
+        const newTags = currentTags.filter(t => t !== tagToMerge.name);
+        if (!newTags.includes(trimmed)) {
+          newTags.push(trimmed);
+        }
+
+        return {
+          ...file,
+          attributes: {
+            ...file.attributes,
+            [selectedDimension]: newTags
+          }
+        };
+      });
+
+      if (sourceTag?.sys_id && targetTagId && onFilesChangeWithoutSync) {
+        onFilesChangeWithoutSync(updatedFiles);
+      } else {
+        setFiles(updatedFiles);
+      }
+
+      setTagRows(prev => {
+        const withoutSource = sourceTag?.sys_id
+          ? prev.filter(tag => tag.sys_id !== sourceTag.sys_id)
+          : prev.filter(tag => !(tag.WHID === selectedDim?.sys_id && tag.BQZ === tagToMerge.name));
+        if (targetTag?.sys_id || !targetTagId || !selectedDim?.sys_id) return withoutSource;
+        return [...withoutSource, { sys_id: targetTagId, WHID: selectedDim.sys_id, BQZ: trimmed }];
+      });
+      setTagToMerge(null);
+      setMergeTargetName('');
+    } catch (err: any) {
+      setTagError(err.message || '标签合并失败');
+    } finally {
+      setIsTagMerging(false);
+    }
   };
 
   const handleDeleteClick = (tagName: string) => {
@@ -513,10 +569,11 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
                               </button>
                               <button 
                                 onClick={() => handleMerge(stat.name)}
-                                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
+                                disabled={isTagMerging}
+                                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-md transition-colors disabled:cursor-not-allowed disabled:opacity-40"
                                 title="合并到..."
                               >
-                                <Merge className="w-4 h-4" />
+                                {isTagMerging ? <Loader2 className="w-4 h-4 animate-spin" /> : <Merge className="w-4 h-4" />}
                               </button>
                               <button 
                                 onClick={() => handleDeleteClick(stat.name)}
@@ -537,6 +594,88 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
           </div>
         </div>
       </div>
+
+      {tagToMerge && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in duration-200 p-4"
+          onClick={() => {
+            if (!isTagMerging) {
+              setTagToMerge(null);
+              setMergeTargetName('');
+            }
+          }}
+        >
+          <div
+            className="bg-white rounded-xl shadow-2xl w-full max-w-[480px] overflow-hidden transform transition-all animate-in zoom-in-95 duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-6">
+              <h3 className="text-xl font-bold text-gray-900 mb-2 flex items-center gap-2">
+                <Merge className="w-6 h-6 text-blue-500" />
+                合并标签值
+              </h3>
+
+              <div className="text-gray-600 mt-4 space-y-4">
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <div className="text-xs font-medium text-gray-500 mb-1">源标签</div>
+                  <div className="font-semibold text-gray-900 break-all">「{tagToMerge.name}」</div>
+                  <div className="mt-1 text-xs text-gray-500">{tagToMerge.count} 个文件正在使用</div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">合并到</label>
+                  <select
+                    value={mergeTargetName}
+                    onChange={(e) => setMergeTargetName(e.target.value)}
+                    disabled={isTagMerging || mergeTargetOptions.length === 0}
+                    className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-400"
+                  >
+                    {mergeTargetOptions.length === 0 ? (
+                      <option value="">暂无可合并的目标标签</option>
+                    ) : (
+                      mergeTargetOptions.map(option => (
+                        <option key={option.name} value={option.name}>
+                          {option.name}（{option.count} 个文件）
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+
+                <div className="rounded-md border border-blue-100 bg-blue-50 p-3 text-sm text-blue-700">
+                  合并后，使用源标签的文件会统一改为目标标签，源标签会从当前维度中移除。
+                </div>
+
+                {tagError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
+                    {tagError}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-3 mt-8">
+                <button
+                  onClick={() => {
+                    setTagToMerge(null);
+                    setMergeTargetName('');
+                  }}
+                  disabled={isTagMerging}
+                  className="px-4 py-2 text-gray-600 font-medium hover:bg-gray-100 rounded-lg transition-colors focus:outline-none disabled:opacity-60"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmMerge}
+                  disabled={isTagMerging || !mergeTargetName || mergeTargetOptions.length === 0}
+                  className="inline-flex items-center justify-center gap-2 px-5 py-2 bg-blue-600 text-white font-medium hover:bg-blue-700 rounded-lg shadow-sm shadow-blue-500/20 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-60"
+                >
+                  {isTagMerging ? <><Loader2 className="h-4 w-4 animate-spin" />合并中...</> : '确认合并'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Delete Confirmation Modal */}
       {tagToDelete && (

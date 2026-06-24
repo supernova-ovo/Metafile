@@ -79,10 +79,44 @@ export interface PrefRow {
 }
 
 const dimNameToIdCache = new Map<string, string>();
+const RETRIABLE_API_DELAYS_MS = [300, 900, 1800];
 // tagKeyToIdCache 已移至 syncAttributes 函数内部（局部变量），避免跨调用 stale 缓存问题
 
 function buildTagKey(dimId: string, tagValue: string): string {
   return `${dimId}::${tagValue}`;
+}
+
+function isRetriableApiError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('502') ||
+    message.includes('503') ||
+    message.includes('504') ||
+    message.includes('Bad Gateway') ||
+    message.includes('Gateway Timeout') ||
+    message.includes('Failed to fetch') ||
+    message.includes('NetworkError')
+  );
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function retryApiCall<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt <= RETRIABLE_API_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt >= RETRIABLE_API_DELAYS_MS.length || !isRetriableApiError(error)) {
+        throw error;
+      }
+      console.warn(`[API_RETRY] ${operation} failed, retrying (${attempt + 1}/${RETRIABLE_API_DELAYS_MS.length})`, error);
+      await wait(RETRIABLE_API_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw new Error(`${operation} failed`);
 }
 
 // ============================================================
@@ -97,6 +131,18 @@ export async function queryFiles(page = 1, pageSize = 200): Promise<{ ROWS: File
     _pagesize: String(pageSize),
   });
   return { ROWS: result.ROWS || [], TOTAL: result.TOTAL || 0 };
+}
+
+async function queryFileById(sys_id: string): Promise<FileRow | null> {
+  const result = await retryApiCall('queryFileById', () => apiClient({
+    id: SECTION_IDS.FILES,
+    mode: 'query',
+    where: JSON.stringify({ sys_id }),
+    _pageindex: '1',
+    _pagesize: '1',
+  }));
+  const rows = result.ROWS || [];
+  return rows.length > 0 ? rows[0] : null;
 }
 
 export async function insertFileRecord(record: FileRow): Promise<boolean> {
@@ -127,12 +173,27 @@ export async function updateFileRecord(sys_id: string, fields: Partial<FileRow>)
 }
 
 export async function deleteFileRecord(sys_id: string): Promise<boolean> {
-  const result = await apiClient({
-    id: SECTION_IDS.FILES,
-    mode: 'update',
-    _p_data: encodeData({ deleted: [{ sys_id }] }),
-  });
-  return result.STATUS === 'Success' || result.STATUS === 'OK';
+  for (let attempt = 0; attempt <= RETRIABLE_API_DELAYS_MS.length; attempt += 1) {
+    try {
+      const result = await apiClient({
+        id: SECTION_IDS.FILES,
+        mode: 'update',
+        _p_data: encodeData({ deleted: [{ sys_id }] }),
+      });
+      if (result.STATUS === 'Success' || result.STATUS === 'OK') return true;
+      if (!(await queryFileById(sys_id))) return true;
+      return false;
+    } catch (error) {
+      if (!(await queryFileById(sys_id))) return true;
+      if (attempt >= RETRIABLE_API_DELAYS_MS.length || !isRetriableApiError(error)) {
+        throw error;
+      }
+      console.warn(`[API_RETRY] deleteFileRecord failed, retrying (${attempt + 1}/${RETRIABLE_API_DELAYS_MS.length})`, error);
+      await wait(RETRIABLE_API_DELAYS_MS[attempt]);
+    }
+  }
+
+  return false;
 }
 
 // ============================================================
@@ -319,6 +380,18 @@ export async function updateTag(sys_id: string, bqz: string): Promise<boolean> {
   return result.STATUS === 'Success' || result.STATUS === 'OK';
 }
 
+async function queryTagById(tagId: string): Promise<TagRow | null> {
+  const result = await retryApiCall('queryTagById', () => apiClient({
+    id: SECTION_IDS.TAGS,
+    mode: 'query',
+    where: JSON.stringify({ sys_id: tagId }),
+    _pageindex: '1',
+    _pagesize: '1',
+  }));
+  const rows = result.ROWS || [];
+  return rows.length > 0 ? rows[0] : null;
+}
+
 export async function deleteTagWithRelations(tagId: string): Promise<boolean> {
   const fileTagsResult = await apiClient({
     id: SECTION_IDS.FILE_TAGS,
@@ -351,6 +424,88 @@ export async function deleteTagWithRelations(tagId: string): Promise<boolean> {
 /**
  * 查询所有标签（含维度名称信息）
  */
+export async function mergeTagInto(sourceTagId: string, targetTagId: string): Promise<boolean> {
+  if (sourceTagId === targetTagId) return true;
+
+  const targetTag = await queryTagById(targetTagId);
+  if (!targetTag?.sys_id || !targetTag.WHID) {
+    throw new Error('目标标签不存在，无法合并');
+  }
+
+  const sourceTag = await queryTagById(sourceTagId);
+  if (!sourceTag?.sys_id) return true;
+
+  const [sourceResult, targetResult] = await Promise.all([
+    retryApiCall('querySourceTagRelations', () => apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'query',
+      where: JSON.stringify({ BQID: sourceTagId }),
+      _pageindex: '1',
+      _pagesize: '10000',
+    })),
+    retryApiCall('queryTargetTagRelations', () => apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'query',
+      where: JSON.stringify({ BQID: targetTagId }),
+      _pageindex: '1',
+      _pagesize: '10000',
+    })),
+  ]);
+
+  const sourceAssocs = (sourceResult.ROWS || []) as FileTagRow[];
+  const targetFileIds = new Set((targetResult.ROWS || []).map((row: FileTagRow) => row.WJID));
+  const duplicateSourceAssocs = sourceAssocs
+    .filter((row) => row.sys_id && targetFileIds.has(row.WJID))
+    .map((row) => ({ sys_id: row.sys_id }));
+  const assocsToMove = sourceAssocs
+    .filter((row) => row.sys_id && !targetFileIds.has(row.WJID))
+    .map((row) => ({ sys_id: row.sys_id, BQID: targetTagId, WHID: targetTag.WHID }));
+
+  if (duplicateSourceAssocs.length > 0) {
+    const removeDuplicatesResult = await retryApiCall('mergeTagRemoveDuplicateRelations', () => apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'update',
+      _p_data: encodeData({ deleted: duplicateSourceAssocs }),
+    }));
+    if (!(removeDuplicatesResult.STATUS === 'Success' || removeDuplicatesResult.STATUS === 'OK')) {
+      return false;
+    }
+  }
+
+  if (assocsToMove.length > 0) {
+    const moveResult = await retryApiCall('mergeTagMoveRelations', () => apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'update',
+      _p_data: encodeData({ updated: assocsToMove }),
+    }));
+    if (!(moveResult.STATUS === 'Success' || moveResult.STATUS === 'OK')) {
+      return false;
+    }
+  }
+
+  const remainingSourceResult = await retryApiCall('queryRemainingSourceTagRelations', () => apiClient({
+    id: SECTION_IDS.FILE_TAGS,
+    mode: 'query',
+    where: JSON.stringify({ BQID: sourceTagId }),
+    _pageindex: '1',
+    _pagesize: '1',
+  }));
+  if ((remainingSourceResult.ROWS || []).length > 0) {
+    return false;
+  }
+
+  const removeSourceResult = await retryApiCall('mergeTagRemoveSourceTag', () => apiClient({
+    id: SECTION_IDS.TAGS,
+    mode: 'update',
+    _p_data: encodeData({ deleted: [{ sys_id: sourceTagId }] }),
+  }));
+  if (removeSourceResult.STATUS === 'Success' || removeSourceResult.STATUS === 'OK') {
+    return true;
+  }
+
+  return !(await queryTagById(sourceTagId));
+}
+
 export async function queryAllTags(): Promise<(TagRow & { WHMC?: string })[]> {
   const dims = await queryAllDimensions();
   const dimMap = new Map(dims.map(d => [d.sys_id!, d.WHMC]));
@@ -385,32 +540,27 @@ export async function queryFileTags(fileId: string): Promise<FileTagRow[]> {
 }
 
 export async function removeAllFileTags(fileId: string): Promise<boolean> {
-  const rows = await queryFileTags(fileId);
-  if (rows.length === 0) return true;
+  return retryApiCall('removeAllFileTags', async () => {
+    const rows = await queryFileTags(fileId);
+    const deleted = rows
+      .filter((row) => row.sys_id)
+      .map((row) => ({ sys_id: row.sys_id }));
 
-  const removeResult = await apiClient({
-    id: SECTION_IDS.FILE_TAGS,
-    mode: 'update',
-    _p_data: encodeData({
-      deleted: rows.map((row) => ({ sys_id: row.sys_id })),
-    }),
+    if (deleted.length === 0) return true;
+
+    const removeResult = await apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'update',
+      _p_data: encodeData({ deleted }),
+    });
+
+    return removeResult.STATUS === 'Success' || removeResult.STATUS === 'OK';
   });
-
-  return removeResult.STATUS === 'Success' || removeResult.STATUS === 'OK';
 }
 
 export async function deleteFileWithRelations(fileId: string): Promise<boolean> {
-  // 步骤0：若用户偏好表中 XZWJID 引用了该文件，先清空
-  // 否则外键约束 FK_D_WJGL_YHPH_XZWJID 会阻止后续的 DELETE 操作
-  try {
-    const pref = await getPreference();
-    if (pref && pref.XZWJID === fileId) {
-      await upsertPreference({ selectedFileId: null });
-    }
-  } catch (e) {
-    // 偏好清空失败时不阻断删除流程（非关键路径），仅记录警告
-    console.warn('[deleteFileWithRelations] 清空 XZWJID 偏好失败，继续尝试删除文件:', e);
-  }
+  const preferencesCleared = await clearFileReferencesFromPreferences(fileId);
+  if (!preferencesCleared) return false;
 
   // 步骤1：删除文件-标签关联（D_WJGL_WJBQ）
   const relationsRemoved = await removeAllFileTags(fileId);
@@ -486,6 +636,39 @@ export async function upsertPreference(prefs: {
 }
 
 // ============================================================
+// D_WJGL_YHPH 引用清理
+// ============================================================
+
+async function queryPreferencesBySelectedFile(fileId: string): Promise<PrefRow[]> {
+  const result = await retryApiCall('queryPreferencesBySelectedFile', () => apiClient({
+    id: SECTION_IDS.PREFERENCES,
+    mode: 'query',
+    where: JSON.stringify({ XZWJID: fileId }),
+    _pageindex: '1',
+    _pagesize: '10000',
+  }));
+  return result.ROWS || [];
+}
+
+async function clearFileReferencesFromPreferences(fileId: string): Promise<boolean> {
+  return retryApiCall('clearFileReferencesFromPreferences', async () => {
+    const rows = await queryPreferencesBySelectedFile(fileId);
+    const updates = rows
+      .filter((row) => row.sys_id)
+      .map((row) => ({ sys_id: row.sys_id, XZWJID: null }));
+
+    if (updates.length === 0) return true;
+
+    const result = await apiClient({
+      id: SECTION_IDS.PREFERENCES,
+      mode: 'update',
+      _p_data: encodeData({ updated: updates }),
+    });
+    return result.STATUS === 'Success' || result.STATUS === 'OK';
+  });
+}
+
+// ============================================================
 // 核心：attributes 同步逻辑
 // ============================================================
 
@@ -494,38 +677,20 @@ export async function upsertPreference(prefs: {
  * D_WJGL_WH / D_WJGL_BQ / D_WJGL_WJBQ
  */
 const syncLocks = new Map<string, Promise<void>>();
-const SYNC_RETRY_DELAYS_MS = [300, 900, 1800];
-
-function isRetriableSyncError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    message.includes('502') ||
-    message.includes('503') ||
-    message.includes('504') ||
-    message.includes('Bad Gateway') ||
-    message.includes('Gateway Timeout') ||
-    message.includes('Failed to fetch') ||
-    message.includes('NetworkError')
-  );
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
 
 async function syncAttributesWithRetry(
   fileId: string,
   attributes: Record<string, string[]>
 ): Promise<void> {
-  for (let attempt = 0; attempt <= SYNC_RETRY_DELAYS_MS.length; attempt += 1) {
+  for (let attempt = 0; attempt <= RETRIABLE_API_DELAYS_MS.length; attempt += 1) {
     try {
       await _syncAttributesInner(fileId, attributes);
       return;
     } catch (error) {
-      if (attempt >= SYNC_RETRY_DELAYS_MS.length || !isRetriableSyncError(error)) {
+      if (attempt >= RETRIABLE_API_DELAYS_MS.length || !isRetriableApiError(error)) {
         throw error;
       }
-      await wait(SYNC_RETRY_DELAYS_MS[attempt]);
+      await wait(RETRIABLE_API_DELAYS_MS[attempt]);
     }
   }
 }
@@ -889,7 +1054,7 @@ export async function auditFileTagRelations(): Promise<{
 if (typeof window !== 'undefined') {
   (window as any).apiService = {
     queryFiles, insertFileRecord, insertFileRecords, updateFileRecord, deleteFileRecord,
-    queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, updateTag, deleteTagWithRelations, queryAllTags,
+    queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, updateTag, deleteTagWithRelations, mergeTagInto, queryAllTags,
     queryFileTags, removeAllFileTags, deleteFileWithRelations,
     getPreference, upsertPreference, syncAttributes, loadFileAttributes, loadAllFileAttributes,
     auditFileTagRelations
