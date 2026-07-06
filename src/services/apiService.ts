@@ -80,6 +80,7 @@ export interface PrefRow {
 
 const dimNameToIdCache = new Map<string, string>();
 const RETRIABLE_API_DELAYS_MS = [300, 900, 1800];
+const FILE_RECORD_READY_DELAYS_MS = [200, 500, 1000, 2000, 3500];
 // tagKeyToIdCache 已移至 syncAttributes 函数内部（局部变量），避免跨调用 stale 缓存问题
 
 function buildTagKey(dimId: string, tagValue: string): string {
@@ -88,14 +89,26 @@ function buildTagKey(dimId: string, tagValue: string): string {
 
 function isRetriableApiError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
   return (
-    message.includes('502') ||
-    message.includes('503') ||
-    message.includes('504') ||
-    message.includes('Bad Gateway') ||
-    message.includes('Gateway Timeout') ||
-    message.includes('Failed to fetch') ||
-    message.includes('NetworkError')
+    normalized.includes('502') ||
+    normalized.includes('503') ||
+    normalized.includes('504') ||
+    normalized.includes('bad gateway') ||
+    normalized.includes('gateway timeout') ||
+    normalized.includes('failed to fetch') ||
+    normalized.includes('networkerror') ||
+    normalized.includes('foreign key') ||
+    normalized.includes('reference constraint') ||
+    normalized.includes('conflicted with the reference') ||
+    normalized.includes('insert conflicted') ||
+    normalized.includes('wjid') ||
+    normalized.includes('bqid') ||
+    normalized.includes('whid') ||
+    message.includes('外键') ||
+    message.includes('引用') ||
+    message.includes('关联') ||
+    message.includes('约束')
   );
 }
 
@@ -143,6 +156,19 @@ async function queryFileById(sys_id: string): Promise<FileRow | null> {
   }));
   const rows = result.ROWS || [];
   return rows.length > 0 ? rows[0] : null;
+}
+
+export async function waitForFileRecord(sys_id: string): Promise<boolean> {
+  for (let attempt = 0; attempt <= FILE_RECORD_READY_DELAYS_MS.length; attempt += 1) {
+    const row = await queryFileById(sys_id);
+    if (row) return true;
+
+    const delay = FILE_RECORD_READY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await wait(delay);
+  }
+
+  return false;
 }
 
 export async function insertFileRecord(record: FileRow): Promise<boolean> {
@@ -1056,7 +1082,7 @@ if (typeof window !== 'undefined') {
     queryFiles, insertFileRecord, insertFileRecords, updateFileRecord, deleteFileRecord,
     queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, updateTag, deleteTagWithRelations, mergeTagInto, queryAllTags,
     queryFileTags, removeAllFileTags, deleteFileWithRelations,
-    getPreference, upsertPreference, syncAttributes, loadFileAttributes, loadAllFileAttributes,
+    getPreference, upsertPreference, waitForFileRecord, syncAttributes, loadFileAttributes, loadAllFileAttributes,
     auditFileTagRelations
   };
 }

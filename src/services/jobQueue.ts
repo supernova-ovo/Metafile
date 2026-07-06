@@ -102,6 +102,13 @@ export const jobQueue = {
       const currentJob = useJobStore.getState().jobs[jobId]; // get latest url
       
       await syncFileMetadata(currentJob, currentJob.url!);
+      update(jobId, { progress: 75 });
+
+      const fileRecordReady = await apiService.waitForFileRecord(currentJob.meta.id);
+      if (!fileRecordReady) {
+        throw new Error('文件元数据已提交，但后端暂未确认主表记录，请稍后重试属性同步');
+      }
+
       update(jobId, { progress: 80 });
 
       await syncFileTags(currentJob);
