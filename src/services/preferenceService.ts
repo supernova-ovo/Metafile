@@ -7,6 +7,7 @@ const LS_KEYS = {
   dimensions: 'metafile_dimensions',
   path: 'metafile_path',
   selectedFile: 'metafile_selectedFile',
+  pendingPrefs: 'metafile_pending_preferences',
 } as const;
 
 export const defaultPreferences: AppPreferences = {
@@ -17,10 +18,13 @@ export const defaultPreferences: AppPreferences = {
 
 // 内存缓存，避免频繁查询数据库
 let cachedPreferences: AppPreferences | null = null;
-let pendingPrefs: { dimensionOrder?: string[]; currentPath?: string[]; selectedFileId?: string | null } = {};
+type PreferencePatch = { dimensionOrder?: string[]; currentPath?: string[]; selectedFileId?: string | null };
+
+let pendingPrefs: PreferencePatch = {};
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 let isFlushing = false;
 const SAVE_DEBOUNCE_MS = 200;
+const RETRY_SAVE_DELAY_MS = 3000;
 
 function sameStringArray(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
@@ -30,39 +34,117 @@ function sameStringArray(a: string[], b: string[]): boolean {
   return true;
 }
 
-function enqueuePreferenceUpdate(patch: { dimensionOrder?: string[]; currentPath?: string[]; selectedFileId?: string | null }) {
-  pendingPrefs = { ...pendingPrefs, ...patch };
+function isEmptyPreferencePatch(patch: PreferencePatch): boolean {
+  return (
+    patch.dimensionOrder === undefined &&
+    patch.currentPath === undefined &&
+    patch.selectedFileId === undefined
+  );
+}
+
+function readPendingPreferencePatch(): PreferencePatch {
+  return storageService.getJson<PreferencePatch>(LS_KEYS.pendingPrefs, {});
+}
+
+function savePendingPreferencePatch(patch: PreferencePatch) {
+  if (isEmptyPreferencePatch(patch)) {
+    storageService.remove(LS_KEYS.pendingPrefs);
+    return;
+  }
+  storageService.setJson(LS_KEYS.pendingPrefs, patch);
+}
+
+function preferencePatchValueMatches<T extends keyof PreferencePatch>(
+  current: PreferencePatch,
+  payload: PreferencePatch,
+  key: T
+): boolean {
+  if (current[key] === undefined || payload[key] === undefined) return false;
+  if (key === 'selectedFileId') return current[key] === payload[key];
+  return sameStringArray(current[key] as string[], payload[key] as string[]);
+}
+
+function clearFlushedPreferencePatch(payload: PreferencePatch) {
+  const current = readPendingPreferencePatch();
+  const next: PreferencePatch = { ...current };
+
+  if (preferencePatchValueMatches(current, payload, 'dimensionOrder')) {
+    delete next.dimensionOrder;
+  }
+  if (preferencePatchValueMatches(current, payload, 'currentPath')) {
+    delete next.currentPath;
+  }
+  if (preferencePatchValueMatches(current, payload, 'selectedFileId')) {
+    delete next.selectedFileId;
+  }
+
+  pendingPrefs = next;
+  savePendingPreferencePatch(next);
+}
+
+function mergePreferencePatch(base: AppPreferences, patch: PreferencePatch): AppPreferences {
+  return {
+    dimensionOrder: patch.dimensionOrder ?? base.dimensionOrder,
+    currentPath: patch.currentPath ?? base.currentPath,
+    selectedFileId: patch.selectedFileId !== undefined ? patch.selectedFileId : base.selectedFileId,
+  };
+}
+
+function persistPreferencesToLocal(preferences: AppPreferences) {
+  storageService.setJson(LS_KEYS.dimensions, preferences.dimensionOrder);
+  storageService.setJson(LS_KEYS.path, preferences.currentPath);
+  if (preferences.selectedFileId) {
+    storageService.setString(LS_KEYS.selectedFile, preferences.selectedFileId);
+  } else {
+    storageService.remove(LS_KEYS.selectedFile);
+  }
+}
+
+function loadPreferencesFromLocal(): AppPreferences {
+  return {
+    dimensionOrder: storageService.getJson<string[]>(LS_KEYS.dimensions, defaultPreferences.dimensionOrder),
+    currentPath: storageService.getJson<string[]>(LS_KEYS.path, defaultPreferences.currentPath),
+    selectedFileId: storageService.getString(LS_KEYS.selectedFile, defaultPreferences.selectedFileId),
+  };
+}
+
+function schedulePreferenceFlush(delayMs = SAVE_DEBOUNCE_MS) {
   if (pendingTimer) {
     clearTimeout(pendingTimer);
   }
   pendingTimer = setTimeout(async () => {
     pendingTimer = null;
-    if (isFlushing) return;
-    const payload = pendingPrefs;
-    pendingPrefs = {};
-    if (
-      payload.dimensionOrder === undefined &&
-      payload.currentPath === undefined &&
-      payload.selectedFileId === undefined
-    ) {
+    if (isFlushing) {
+      schedulePreferenceFlush(delayMs);
       return;
     }
+
+    const payload = readPendingPreferencePatch();
+    if (isEmptyPreferencePatch(payload)) return;
+
     isFlushing = true;
+    let retryDelayMs = SAVE_DEBOUNCE_MS;
     try {
       await apiService.upsertPreference(payload);
+      clearFlushedPreferencePatch(payload);
     } catch (e) {
-      console.warn('[DB] 保存偏好失败:', e);
+      pendingPrefs = { ...readPendingPreferencePatch(), ...payload };
+      savePendingPreferencePatch(pendingPrefs);
+      retryDelayMs = RETRY_SAVE_DELAY_MS;
+      console.warn('[DB] 保存偏好失败，已保留待同步状态:', e);
     } finally {
       isFlushing = false;
-      if (
-        pendingPrefs.dimensionOrder !== undefined ||
-        pendingPrefs.currentPath !== undefined ||
-        pendingPrefs.selectedFileId !== undefined
-      ) {
-        enqueuePreferenceUpdate({});
+      if (!isEmptyPreferencePatch(readPendingPreferencePatch())) {
+        schedulePreferenceFlush(retryDelayMs);
       }
     }
-  }, SAVE_DEBOUNCE_MS);
+  }, delayMs);
+}
+
+function enqueuePreferenceUpdate(patch: PreferencePatch) {
+  pendingPrefs = { ...readPendingPreferencePatch(), ...pendingPrefs, ...patch };
+  savePendingPreferencePatch(pendingPrefs);
+  schedulePreferenceFlush();
 }
 
 /**
@@ -88,27 +170,29 @@ export const preferenceService = {
    * 异步从数据库初始化偏好
    */
   async initFromDb(): Promise<AppPreferences> {
+    pendingPrefs = readPendingPreferencePatch();
     const dbPref = await loadPreferencesFromDb();
     if (dbPref) {
-      cachedPreferences = { ...dbPref };
-      // 同步到 LocalStorage 作为缓存
-      storageService.setJson(LS_KEYS.dimensions, dbPref.dimensionOrder);
-      storageService.setJson(LS_KEYS.path, dbPref.currentPath);
-      if (dbPref.selectedFileId) {
-        storageService.setString(LS_KEYS.selectedFile, dbPref.selectedFileId);
+      const mergedPreferences = mergePreferencePatch(dbPref, pendingPrefs);
+      cachedPreferences = { ...mergedPreferences };
+      persistPreferencesToLocal(mergedPreferences);
+      if (!isEmptyPreferencePatch(pendingPrefs)) {
+        schedulePreferenceFlush(0);
       }
-      return dbPref;
+      return mergedPreferences;
     }
 
-    // 数据库无偏好 → 写入默认值
-    const defaults = { ...defaultPreferences };
-    cachedPreferences = defaults;
-    await apiService.upsertPreference({
-      dimensionOrder: defaults.dimensionOrder,
-      currentPath: defaults.currentPath,
-      selectedFileId: defaults.selectedFileId,
+    const fallbackPreferences = mergePreferencePatch(loadPreferencesFromLocal(), pendingPrefs);
+    cachedPreferences = { ...fallbackPreferences };
+    persistPreferencesToLocal(fallbackPreferences);
+    savePendingPreferencePatch({
+      ...pendingPrefs,
+      dimensionOrder: fallbackPreferences.dimensionOrder,
+      currentPath: fallbackPreferences.currentPath,
+      selectedFileId: fallbackPreferences.selectedFileId,
     });
-    return defaults;
+    schedulePreferenceFlush(0);
+    return fallbackPreferences;
   },
 
   getDimensionOrder() {
@@ -159,16 +243,13 @@ export const preferenceService = {
     storageService.remove(LS_KEYS.path);
     storageService.remove(LS_KEYS.selectedFile);
 
-    // 重置数据库
-    try {
-      await apiService.upsertPreference({
-        dimensionOrder: defaultPreferences.dimensionOrder,
-        currentPath: defaultPreferences.currentPath,
-        selectedFileId: defaultPreferences.selectedFileId,
-      });
-    } catch {}
-
     cachedPreferences = { ...defaultPreferences };
+    persistPreferencesToLocal(defaultPreferences);
+    enqueuePreferenceUpdate({
+      dimensionOrder: defaultPreferences.dimensionOrder,
+      currentPath: defaultPreferences.currentPath,
+      selectedFileId: defaultPreferences.selectedFileId,
+    });
     return defaultPreferences;
   },
 };
