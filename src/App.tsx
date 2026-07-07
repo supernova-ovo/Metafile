@@ -476,6 +476,7 @@ function App() {
               allFiles={files}
               dimensionOrder={dimensionOrder}
               availableDimensions={availableDimensions}
+              availableTagValues={availableTagValues}
               onUpdateAttributes={handleUpdateAttributes}
               onDeleteFile={handleDeleteFile}
               onClose={() => setSelectedFileId(null)}

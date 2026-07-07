@@ -98,17 +98,35 @@ export function Explorer({
   };
 
   const getFolderColorStyles = (dimension: string) => {
-    switch (dimension) {
-      case '部门': return { text: 'text-blue-500', fill: 'fill-blue-100', bg: 'bg-blue-50', border: 'border-blue-200' };
-      case '密级': return { text: 'text-amber-500', fill: 'fill-amber-100', bg: 'bg-amber-50', border: 'border-amber-200' };
-      case '年份': return { text: 'text-green-500', fill: 'fill-green-100', bg: 'bg-green-50', border: 'border-green-200' };
-      case '项目': return { text: 'text-purple-500', fill: 'fill-purple-100', bg: 'bg-purple-50', border: 'border-purple-200' };
-      case '档案类别': return { text: 'text-indigo-500', fill: 'fill-indigo-100', bg: 'bg-indigo-50', border: 'border-indigo-200' };
-      case '档案分类': return { text: 'text-cyan-600', fill: 'fill-cyan-100', bg: 'bg-cyan-50', border: 'border-cyan-200' };
-      case '状态': return { text: 'text-emerald-600', fill: 'fill-emerald-100', bg: 'bg-emerald-50', border: 'border-emerald-200' };
-      case '文件类型': return { text: 'text-rose-500', fill: 'fill-rose-100', bg: 'bg-rose-50', border: 'border-rose-200' };
-      default: return { text: 'text-gray-500', fill: 'fill-gray-100', bg: 'bg-gray-50', border: 'border-gray-200' };
-    }
+    const knownColors: Record<string, { text: string; fill: string; bg: string; border: string }> = {
+      部门: { text: 'text-blue-500', fill: 'fill-blue-100', bg: 'bg-blue-50', border: 'border-blue-200' },
+      密级: { text: 'text-amber-500', fill: 'fill-amber-100', bg: 'bg-amber-50', border: 'border-amber-200' },
+      年份: { text: 'text-green-500', fill: 'fill-green-100', bg: 'bg-green-50', border: 'border-green-200' },
+      项目: { text: 'text-purple-500', fill: 'fill-purple-100', bg: 'bg-purple-50', border: 'border-purple-200' },
+      档案类别: { text: 'text-indigo-500', fill: 'fill-indigo-100', bg: 'bg-indigo-50', border: 'border-indigo-200' },
+      档案分类: { text: 'text-cyan-600', fill: 'fill-cyan-100', bg: 'bg-cyan-50', border: 'border-cyan-200' },
+      状态: { text: 'text-emerald-600', fill: 'fill-emerald-100', bg: 'bg-emerald-50', border: 'border-emerald-200' },
+      文件类型: { text: 'text-rose-500', fill: 'fill-rose-100', bg: 'bg-rose-50', border: 'border-rose-200' },
+    };
+
+    if (knownColors[dimension]) return knownColors[dimension];
+    if (dimension.includes('项目')) return knownColors.项目;
+    if (dimension.includes('类型') || dimension.includes('分类')) return knownColors.档案分类;
+    if (dimension.includes('时间') || dimension.includes('年份')) return knownColors.年份;
+    if (dimension.includes('文件')) return knownColors.文件类型;
+
+    const fallbackColors = [
+      knownColors.部门,
+      knownColors.密级,
+      knownColors.年份,
+      knownColors.项目,
+      knownColors.档案类别,
+      knownColors.档案分类,
+      knownColors.状态,
+      knownColors.文件类型,
+    ];
+    const hash = Array.from(dimension).reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    return fallbackColors[hash % fallbackColors.length];
   };
 
   const formatSize = (bytes: number) => {
