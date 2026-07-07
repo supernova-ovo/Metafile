@@ -1068,16 +1068,35 @@ export async function loadFileAttributes(fileId: string): Promise<Record<string,
   return result;
 }
 
-export async function loadAllFileAttributes(): Promise<Record<string, Record<string, string[]>>> {
-  const [assocsR, dimsR, tagsR] = await Promise.all([
-    apiClient({ id: SECTION_IDS.FILE_TAGS, mode: 'query', _pageindex: '1', _pagesize: '10000' }),
-    apiClient({ id: SECTION_IDS.DIMS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
-    apiClient({ id: SECTION_IDS.TAGS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
-  ]);
+async function queryAllRows(id: string, pageSize: number): Promise<any[]> {
+  const rows: any[] = [];
+  let pageIndex = 1;
+  let total = Number.POSITIVE_INFINITY;
 
-  const assocs = assocsR.ROWS || [];
-  const dims = dimsR.ROWS || [];
-  const tags = tagsR.ROWS || [];
+  while (rows.length < total) {
+    const result = await apiClient({
+      id,
+      mode: 'query',
+      _pageindex: String(pageIndex),
+      _pagesize: String(pageSize),
+    });
+    const pageRows = result.ROWS || [];
+    rows.push(...pageRows);
+    total = Number(result.TOTAL ?? rows.length);
+
+    if (pageRows.length === 0) break;
+    pageIndex += 1;
+  }
+
+  return rows;
+}
+
+export async function loadAllFileAttributes(): Promise<Record<string, Record<string, string[]>>> {
+  const [assocs, dims, tags] = await Promise.all([
+    queryAllRows(SECTION_IDS.FILE_TAGS, 10000),
+    queryAllRows(SECTION_IDS.DIMS, 5000),
+    queryAllRows(SECTION_IDS.TAGS, 5000),
+  ]);
 
   const dimNameById = new Map<string, string>();
   for (const d of dims) {
