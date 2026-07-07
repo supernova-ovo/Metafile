@@ -10,10 +10,12 @@ interface ManagementProps {
   onFilesChangeWithoutSync?: (files: FileItem[]) => void;
   dimensions: DimRow[];
   setDimensions: React.Dispatch<React.SetStateAction<DimRow[]>>;
+  onNotify?: (title: string, message: string, tone: 'success' | 'error') => void;
+  onTagsChanged?: () => void | Promise<void>;
   onClose: () => void;
 }
 
-export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensions, setDimensions, onClose }: ManagementProps) {
+export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensions, setDimensions, onNotify, onTagsChanged, onClose }: ManagementProps) {
   const [selectedDimension, setSelectedDimension] = useState<string>(dimensions[0]?.WHMC || '');
   const [isExpanded, setIsExpanded] = useState(true);
   const [tagRows, setTagRows] = useState<TagRow[]>([]);
@@ -56,6 +58,7 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
         const newDimObj: DimRow = { sys_id, WHMC: newDim, WHMS: newDim };
         setDimensions(prev => [...prev, newDimObj]);
         setSelectedDimension(newDim);
+        void onTagsChanged?.();
       } else if (dimModalConfig.mode === 'edit' && dimModalConfig.dimId) {
         await updateDimension(dimModalConfig.dimId, newDim);
         setDimensions(prev => prev.map(d => d.sys_id === dimModalConfig.dimId ? { ...d, WHMC: newDim, WHMS: newDim } : d));
@@ -76,10 +79,13 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
         }
 
         if (selectedDimension === dimModalConfig.initialName) setSelectedDimension(newDim);
+        void onTagsChanged?.();
       }
       setDimModalConfig({ isOpen: false, mode: 'create' });
     } catch (err: any) {
-      setDimError(err.message || '操作失败');
+      const message = err.message || '操作失败';
+      setDimError(message);
+      onNotify?.('维度保存失败', message, 'error');
     } finally {
       setIsDimSubmitting(false);
     }
@@ -106,10 +112,13 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
       } else {
         setFiles(updatedFiles);
       }
+      void onTagsChanged?.();
       
       setDeleteDimConfig({ isOpen: false });
     } catch (err: any) {
-      setDimError(err.message || '删除失败');
+      const message = err.message || '删除失败';
+      setDimError(message);
+      onNotify?.('维度删除失败', message, 'error');
     } finally {
       setIsDimDeleting(false);
     }
@@ -137,7 +146,9 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
       .catch((err: any) => {
         if (!cancelled) {
           setTagRows([]);
-          setTagError(err.message || '加载标签失败');
+          const message = err.message || '加载标签失败';
+          setTagError(message);
+          onNotify?.('标签加载失败', message, 'error');
         }
       })
       .finally(() => {
@@ -147,7 +158,7 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
     return () => {
       cancelled = true;
     };
-  }, [selectedDimRow?.sys_id]);
+  }, [selectedDimRow?.sys_id, onNotify]);
 
   // Compute tag statistics for the selected dimension
   const tagStats = useMemo(() => {
@@ -200,12 +211,14 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
       if (tagModalConfig.mode === 'create') {
         const sys_id = await ensureTag(selectedDimRow.sys_id, newTag);
         setTagRows(prev => [...prev, { sys_id, WHID: selectedDimRow.sys_id!, BQZ: newTag }]);
+        void onTagsChanged?.();
       } else if (tagModalConfig.mode === 'edit' && tagModalConfig.initialName) {
         if (tagModalConfig.tagId) {
           await updateTag(tagModalConfig.tagId, newTag);
           setTagRows(prev => prev.map(tag => (
             tag.sys_id === tagModalConfig.tagId ? { ...tag, BQZ: newTag } : tag
           )));
+          void onTagsChanged?.();
         }
 
         const updatedFiles = files.map(file => {
@@ -232,7 +245,9 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
       setTagModalConfig({ isOpen: false, mode: 'create' });
       setTagInput('');
     } catch (err: any) {
-      setTagError(err.message || '标签保存失败');
+      const message = err.message || '标签保存失败';
+      setTagError(message);
+      onNotify?.('标签保存失败', message, 'error');
     } finally {
       setIsTagSubmitting(false);
     }
@@ -310,10 +325,13 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
         if (targetTag?.sys_id || !targetTagId || !selectedDim?.sys_id) return withoutSource;
         return [...withoutSource, { sys_id: targetTagId, WHID: selectedDim.sys_id, BQZ: trimmed }];
       });
+      void onTagsChanged?.();
       setTagToMerge(null);
       setMergeTargetName('');
     } catch (err: any) {
-      setTagError(err.message || '标签合并失败');
+      const message = err.message || '标签合并失败';
+      setTagError(message);
+      onNotify?.('标签合并失败', message, 'error');
     } finally {
       setIsTagMerging(false);
     }
@@ -353,9 +371,12 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
       } else {
         setFiles(updatedFiles);
       }
+      void onTagsChanged?.();
       setTagToDelete(null);
     } catch (err: any) {
-      setTagError(err.message || '标签删除失败');
+      const message = err.message || '标签删除失败';
+      setTagError(message);
+      onNotify?.('标签删除失败', message, 'error');
     } finally {
       setIsTagDeleting(false);
     }

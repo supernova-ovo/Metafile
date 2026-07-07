@@ -118,6 +118,16 @@ export const jobQueue = {
     } catch (error: any) {
       console.error(`[JobQueue] Job ${jobId} failed:`, error);
       update(jobId, { status: 'failed', error: error.message || '未知错误' });
+      const failedJob = useJobStore.getState().jobs[jobId] || job;
+      if (failedJob?.url) {
+        fileService.markPendingAttributeSync([jobId]);
+        fileService.notifySyncError({
+          title: '上传属性同步失败',
+          message: `${failedJob.meta.name} 已上传，但标签属性暂未保存到后端，请点击上传队列中的重试。`,
+          fileId: jobId,
+          error,
+        });
+      }
       
       // Remove from FileStore if it failed? 
       // Actually, it's better to keep it in the UI as a local file, but maybe mark it as failed visually later.

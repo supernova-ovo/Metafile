@@ -81,10 +81,33 @@ export interface PrefRow {
 const dimNameToIdCache = new Map<string, string>();
 const RETRIABLE_API_DELAYS_MS = [300, 900, 1800];
 const FILE_RECORD_READY_DELAYS_MS = [200, 500, 1000, 2000, 3500];
+const DICTIONARY_RECORD_READY_DELAYS_MS = [200, 500, 1000, 2000];
 // tagKeyToIdCache 已移至 syncAttributes 函数内部（局部变量），避免跨调用 stale 缓存问题
 
 function buildTagKey(dimId: string, tagValue: string): string {
   return `${dimId}::${tagValue}`;
+}
+
+function cacheDimension(row: DimRow) {
+  if (row.WHMC && row.sys_id) {
+    dimNameToIdCache.set(row.WHMC.trim(), row.sys_id);
+  }
+}
+
+async function refreshDimensionCache(): Promise<void> {
+  const dims = await queryAllDimensions();
+  dimNameToIdCache.clear();
+  for (const d of dims) {
+    cacheDimension(d);
+  }
+}
+
+function removeCachedDimensionById(dimId: string) {
+  for (const [name, cachedDimId] of dimNameToIdCache.entries()) {
+    if (cachedDimId === dimId) {
+      dimNameToIdCache.delete(name);
+    }
+  }
 }
 
 function isRetriableApiError(error: unknown): boolean {
@@ -236,6 +259,31 @@ export async function queryAllDimensions(): Promise<DimRow[]> {
   return result.ROWS || [];
 }
 
+async function queryDimensionById(sys_id: string): Promise<DimRow | null> {
+  const result = await retryApiCall('queryDimensionById', () => apiClient({
+    id: SECTION_IDS.DIMS,
+    mode: 'query',
+    where: JSON.stringify({ sys_id }),
+    _pageindex: '1',
+    _pagesize: '1',
+  }));
+  const rows = result.ROWS || [];
+  return rows.length > 0 ? rows[0] : null;
+}
+
+async function waitForDimensionRecord(sys_id: string): Promise<boolean> {
+  for (let attempt = 0; attempt <= DICTIONARY_RECORD_READY_DELAYS_MS.length; attempt += 1) {
+    const row = await queryDimensionById(sys_id);
+    if (row) return true;
+
+    const delay = DICTIONARY_RECORD_READY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await wait(delay);
+  }
+
+  return false;
+}
+
 export async function ensureDimension(whmc: string): Promise<string> {
   // 先查询是否存在
   const result = await apiClient({
@@ -248,6 +296,7 @@ export async function ensureDimension(whmc: string): Promise<string> {
 
   const rows = result.ROWS || [];
   if (rows.length > 0) {
+    cacheDimension(rows[0]);
     return rows[0].sys_id;
   }
 
@@ -277,6 +326,11 @@ export async function ensureDimension(whmc: string): Promise<string> {
   });
 
   if (insertResult.STATUS === 'Success' || insertResult.STATUS === 'OK') {
+    dimNameToIdCache.set(whmc.trim(), sys_id);
+    const ready = await waitForDimensionRecord(sys_id);
+    if (!ready) {
+      throw new Error(`维度已提交但暂未可查询，请稍后重试: ${whmc}`);
+    }
     return sys_id;
   }
   throw new Error(`创建维度失败: ${whmc} (${JSON.stringify(insertResult)})`);
@@ -288,7 +342,12 @@ export async function updateDimension(sys_id: string, whmc: string): Promise<boo
     mode: 'update',
     _p_data: encodeData({ updated: [{ sys_id, WHMC: whmc, WHMS: whmc }] }),
   });
-  return result.STATUS === 'Success' || result.STATUS === 'OK';
+  const success = result.STATUS === 'Success' || result.STATUS === 'OK';
+  if (success) {
+    removeCachedDimensionById(sys_id);
+    dimNameToIdCache.set(whmc.trim(), sys_id);
+  }
+  return success;
 }
 
 export async function deleteDimensionWithRelations(dimId: string): Promise<boolean> {
@@ -333,7 +392,11 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
     _p_data: encodeData({ deleted: [{ sys_id: dimId }] }),
   });
 
-  return removeDimResult.STATUS === 'Success' || removeDimResult.STATUS === 'OK';
+  const success = removeDimResult.STATUS === 'Success' || removeDimResult.STATUS === 'OK';
+  if (success) {
+    removeCachedDimensionById(dimId);
+  }
+  return success;
 }
 
 // ============================================================
@@ -352,6 +415,11 @@ export async function queryTagsByDim(dimId: string): Promise<TagRow[]> {
 }
 
 export async function ensureTag(whid: string, bqz: string): Promise<string> {
+  const dimensionReady = await waitForDimensionRecord(whid);
+  if (!dimensionReady) {
+    throw new Error(`标签所属维度暂未可查询，请稍后重试: ${bqz}`);
+  }
+
   // 先查询同维度下是否存在同名标签
   const result = await apiClient({
     id: SECTION_IDS.TAGS,
@@ -392,6 +460,10 @@ export async function ensureTag(whid: string, bqz: string): Promise<string> {
   });
 
   if (insertResult.STATUS === 'Success' || insertResult.STATUS === 'OK') {
+    const tagReady = await waitForTagRecord(sys_id);
+    if (!tagReady) {
+      throw new Error(`标签已提交但暂未可查询，请稍后重试: ${bqz}`);
+    }
     return sys_id;
   }
   throw new Error(`创建标签失败: ${bqz} (${JSON.stringify(insertResult)})`);
@@ -416,6 +488,19 @@ async function queryTagById(tagId: string): Promise<TagRow | null> {
   }));
   const rows = result.ROWS || [];
   return rows.length > 0 ? rows[0] : null;
+}
+
+async function waitForTagRecord(sys_id: string): Promise<boolean> {
+  for (let attempt = 0; attempt <= DICTIONARY_RECORD_READY_DELAYS_MS.length; attempt += 1) {
+    const row = await queryTagById(sys_id);
+    if (row) return true;
+
+    const delay = DICTIONARY_RECORD_READY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await wait(delay);
+  }
+
+  return false;
 }
 
 export async function deleteTagWithRelations(tagId: string): Promise<boolean> {
@@ -780,13 +865,8 @@ async function _syncAttributesInner(
     return;
   }
 
-  // 3) 预热维度缓存（最多 1 次 query）
-  if (dimNameToIdCache.size === 0) {
-    const dims = await queryAllDimensions();
-    for (const d of dims) {
-      if (d.WHMC && d.sys_id) dimNameToIdCache.set(d.WHMC.trim(), d.sys_id);
-    }
-  }
+  // 3) 刷新维度缓存，避免删除/重建同名维度后继续使用旧 WHID。
+  await refreshDimensionCache();
 
   // 4) 缺失维度批量创建（1 次 update），并回填缓存
   const now = new Date().toISOString();

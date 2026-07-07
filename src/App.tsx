@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { Explorer } from './components/Explorer';
@@ -13,7 +13,7 @@ import type { FileItem, ActiveFilter } from './lib/types';
 import { fileService } from './services/fileService';
 import { preferenceService } from './services/preferenceService';
 import * as apiService from './services/apiService';
-import type { DimRow } from './services/apiService';
+import type { DimRow, TagRow } from './services/apiService';
 import { availableDimensions as mockAvailableDimensions } from './lib/mock-data';
 import { useFileStore } from './store/useFileStore';
 import { selectVirtualTree } from './store/selectors';
@@ -39,8 +39,31 @@ function App() {
   const [dimensions, setDimensions] = useState<DimRow[]>(
     mockAvailableDimensions.map(d => ({ sys_id: d, WHMC: d, WHMS: d }))
   );
+  const [knownTags, setKnownTags] = useState<(TagRow & { WHMC?: string })[]>([]);
   
   const availableDimensions = dimensions.map(d => d.WHMC);
+  const availableTagValues = useMemo(() => {
+    const values: Record<string, Set<string>> = {};
+
+    for (const [dim, tags] of Object.entries(buildAvailableTagValues(files))) {
+      values[dim] = new Set(tags);
+    }
+
+    for (const tag of knownTags) {
+      const dimName = tag.WHMC?.trim();
+      const tagValue = tag.BQZ?.trim();
+      if (!dimName || !tagValue) continue;
+      if (!values[dimName]) values[dimName] = new Set();
+      values[dimName].add(tagValue);
+    }
+
+    return Object.fromEntries(
+      Object.entries(values).map(([dim, tags]) => [
+        dim,
+        [...tags].sort((a, b) => a.localeCompare(b, 'zh-CN')),
+      ])
+    );
+  }, [files, knownTags]);
   
   const [isDragging, setIsDragging] = useState(false);
   const [dragCounter, setDragCounter] = useState(0);
@@ -63,6 +86,10 @@ function App() {
   const isBootstrappingRef = useRef(true);
   const hasInitRunRef = useRef(false);
 
+  const showToast = useCallback((title: string, message: string, tone: 'success' | 'error') => {
+    setToast({ title, message, tone });
+  }, []);
+
   // 启动时异步从数据库初始化（自动写入种子数据）
   useEffect(() => {
     if (hasInitRunRef.current) return;
@@ -72,10 +99,11 @@ function App() {
       try {
         // console.log('[App] 正在从数据库初始化...');
         // 并行初始化文件 + 偏好 + 维度
-        const [dbFiles, dbPrefs, dbDims] = await Promise.all([
+        const [dbFiles, dbPrefs, dbDims, dbTags] = await Promise.all([
           fileService.initFromDb(),
           preferenceService.initFromDb(),
           apiService.queryAllDimensions(),
+          apiService.queryAllTags().catch(() => []),
         ]);
 
         // 更新状态
@@ -89,6 +117,7 @@ function App() {
           // If DB is totally empty, we might want to fallback to mock just for UI, but let's sync real dbDims
           setDimensions(dbDims);
         }
+        setKnownTags(dbTags);
         // console.log(`[App] 数据库初始化完成: ${dbFiles.length} 个文件, ${dbDims.length} 个维度`);
       } catch (error) {
         console.warn('[App] 数据库初始化失败，使用 LocalStorage 数据:', error);
@@ -100,6 +129,12 @@ function App() {
       setIsBootstrapping(false);
     });
   }, []);
+
+  useEffect(() => {
+    return fileService.subscribeSyncErrors((event) => {
+      showToast(event.title, event.message, 'error');
+    });
+  }, [showToast]);
 
   // Drag and drop handlers
   const handleDragEnter = (e: React.DragEvent) => {
@@ -261,6 +296,16 @@ function App() {
     setFiles(nextFiles, true);
   };
 
+  const refreshKnownTags = async () => {
+    try {
+      const tags = await apiService.queryAllTags();
+      setKnownTags(tags);
+    } catch (error) {
+      console.warn('[App] 刷新标签字典失败:', error);
+      showToast('标签字典刷新失败', '后端标签列表暂未刷新成功，请稍后重试或刷新页面。', 'error');
+    }
+  };
+
   const handleNavigatePath = (index: number) => {
     if (index === -1) {
       setCurrentPath([]);
@@ -347,7 +392,7 @@ function App() {
           files={uploadModalFiles} 
           dimensionOrder={dimensionOrder}
           availableDimensions={availableDimensions}
-          availableTagValues={buildAvailableTagValues(files)}
+          availableTagValues={availableTagValues}
           onCancel={() => {
             setUploadModalFiles([]);
             setPendingBrowserFiles([]);
@@ -376,7 +421,7 @@ function App() {
       })()}
 
       {toast && (
-        <div className="pointer-events-none fixed right-6 top-6 z-[120]">
+        <div className="pointer-events-none fixed bottom-6 right-6 z-[120]">
           <StatusToast
             title={toast.title}
             message={toast.message}
@@ -444,6 +489,8 @@ function App() {
           onFilesChangeWithoutSync={handleFilesChangeWithoutSync}
           dimensions={dimensions}
           setDimensions={setDimensions}
+          onNotify={showToast}
+          onTagsChanged={refreshKnownTags}
           onClose={() => setViewMode('explorer')}
         />
       )}

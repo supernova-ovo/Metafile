@@ -12,11 +12,19 @@ const PENDING_FILE_RENAME_KEY = 'metafile_pending_file_rename';
 const SAVE_DEBOUNCE_MS = 500;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+export interface FileSyncErrorEvent {
+  title: string;
+  message: string;
+  fileId?: string;
+  error?: unknown;
+}
+
 let pendingSaveTimer: ReturnType<typeof setTimeout> | null = null;
 let latestPendingFiles: FileItem[] = [];
 let isSavingToDb = false;
 const lastSyncedFingerprints = new Map<string, string>();
 const hydratedAttributeFileIds = new Set<string>();
+const syncErrorListeners = new Set<(event: FileSyncErrorEvent) => void>();
 
 const cloneAttributes = (attributes: Record<string, string[]>) =>
   Object.fromEntries(Object.entries(attributes).map(([key, values]) => [key, [...values]]));
@@ -46,6 +54,13 @@ function stableAttributesString(attributes: Record<string, string[]>): string {
   const sortedKeys = Object.keys(attributes).sort();
   const normalized = sortedKeys.map((key) => [key, [...(attributes[key] || [])].sort()]);
   return JSON.stringify(normalized);
+}
+
+function stableDomainAttributesString(attributes: Record<string, string[]>): string {
+  const domainAttributes = Object.fromEntries(
+    Object.entries(attributes).filter(([key]) => key !== FILE_TYPE_DIMENSION)
+  );
+  return stableAttributesString(domainAttributes);
 }
 
 function getFileFingerprint(file: FileItem): string {
@@ -111,12 +126,6 @@ function clearPendingFileRename(fileIds: string[]) {
   savePendingFileRenames(pendingRenames);
 }
 
-function hasDomainAttributes(attributes: Record<string, string[]>): boolean {
-  return Object.entries(attributes).some(([key, values]) => (
-    key !== FILE_TYPE_DIMENSION && values.length > 0
-  ));
-}
-
 function markFilesAsSynced(files: FileItem[], options?: { excludeIds?: Set<string> }) {
   lastSyncedFingerprints.clear();
   hydratedAttributeFileIds.clear();
@@ -124,6 +133,10 @@ function markFilesAsSynced(files: FileItem[], options?: { excludeIds?: Set<strin
     if (options?.excludeIds?.has(file.id)) continue;
     lastSyncedFingerprints.set(file.id, getFileFingerprint(file));
   }
+}
+
+function emitSyncError(event: FileSyncErrorEvent) {
+  syncErrorListeners.forEach((listener) => listener(event));
 }
 
 /**
@@ -222,8 +235,12 @@ export const fileService = {
           const cachedFile = cachedFilesById.get(f.id);
 
           if (pendingAttributeSyncIds.has(f.id)) {
-            const cachedAttrs = cachedFile?.attributes || {};
-            if (hasDomainAttributes(cachedAttrs) && !hasDomainAttributes(backendAttrs)) {
+            const cachedAttrs = cachedFile?.attributes;
+            const backendMatchesPending = cachedAttrs
+              ? stableDomainAttributesString(cachedAttrs) === stableDomainAttributesString(backendAttrs)
+              : true;
+
+            if (cachedAttrs && !backendMatchesPending) {
               f.attributes = cloneAttributes(cachedAttrs);
               restoredPendingIds.add(f.id);
               hydratedAttributeFileIds.add(f.id);
@@ -242,7 +259,7 @@ export const fileService = {
         for (const f of files) {
           if (!pendingAttributeSyncIds.has(f.id)) continue;
           const cachedFile = cachedFilesById.get(f.id);
-          if (cachedFile && hasDomainAttributes(cachedFile.attributes)) {
+          if (cachedFile) {
             f.attributes = cloneAttributes(cachedFile.attributes);
             restoredPendingIds.add(f.id);
             hydratedAttributeFileIds.add(f.id);
@@ -391,6 +408,13 @@ export const fileService = {
         clearPendingAttributeSync([file.id]);
       } catch (err) {
         console.warn('[DB] 文件写入失败:', file.name, err);
+        markPendingAttributeSync([file.id]);
+        emitSyncError({
+          title: '文件属性保存失败',
+          message: `${file.name} 的标签或属性暂未同步到后端，已保留待同步状态，请稍后重试。`,
+          fileId: file.id,
+          error: err,
+        });
       }
     }
 
@@ -421,7 +445,15 @@ export const fileService = {
         }
         clearPendingAttributeSync([fileId]);
       })
-      .catch(e => console.warn('[DB]', e));
+      .catch(e => {
+        console.warn('[DB]', e);
+        emitSyncError({
+          title: '标签保存失败',
+          message: `${targetFile?.name || '当前文件'} 的标签未能同步到后端，刷新后可能暂时不可见，请稍后重试。`,
+          fileId,
+          error: e,
+        });
+      });
 
     return updatedFiles;
   },
@@ -459,8 +491,25 @@ export const fileService = {
         clearPendingAttributeSync([file.id]);
       } catch (e) {
         console.warn('[DB] 上传后属性同步失败:', file.name, e);
+        emitSyncError({
+          title: '上传属性同步失败',
+          message: `${file.name} 已上传，但标签属性暂未同步到后端，请稍后重试上传任务或重新保存属性。`,
+          fileId: file.id,
+          error: e,
+        });
       }
     }
+  },
+
+  subscribeSyncErrors(listener: (event: FileSyncErrorEvent) => void) {
+    syncErrorListeners.add(listener);
+    return () => {
+      syncErrorListeners.delete(listener);
+    };
+  },
+
+  notifySyncError(event: FileSyncErrorEvent) {
+    emitSyncError(event);
   },
 
   markPendingAttributeSync(fileIds: string[]) {
