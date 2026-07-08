@@ -251,8 +251,8 @@ export const fileService = {
 
           if (attrs) {
             f.attributes = backendAttrs;
-            hydratedAttributeFileIds.add(f.id);
           }
+          hydratedAttributeFileIds.add(f.id);
         }
       } catch (e) {
         console.warn('[DB] 批量回填文件属性失败，回退懒加载模式:', e);
@@ -403,9 +403,11 @@ export const fileService = {
         }
 
         clearPendingFileRename([file.id]);
-        await apiService.syncAttributes(file.id, file.attributes);
+        if (hydratedAttributeFileIds.has(file.id) || getPendingAttributeSyncIds().has(file.id)) {
+          await apiService.syncAttributes(file.id, file.attributes);
+          clearPendingAttributeSync([file.id]);
+        }
         lastSyncedFingerprints.set(file.id, getFileFingerprint(file));
-        clearPendingAttributeSync([file.id]);
       } catch (err) {
         console.warn('[DB] 文件写入失败:', file.name, err);
         markPendingAttributeSync([file.id]);

@@ -2,6 +2,8 @@ import { useState, useMemo } from 'react';
 import { X, UploadCloud, Tag } from 'lucide-react';
 import type { FileItem } from '../lib/types';
 
+const QUICK_TAG_LIMIT = 4;
+
 interface UploadModalProps {
   files: FileItem[];
   onConfirm: (files: FileItem[]) => void;
@@ -15,6 +17,7 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
   const [stagedFiles, setStagedFiles] = useState<FileItem[]>(files);
   const [batchDim, setBatchDim] = useState(dimensionOrder[0] || '项目');
   const [batchVal, setBatchVal] = useState('');
+  const [expandedQuickTagGroups, setExpandedQuickTagGroups] = useState<Set<string>>(new Set());
 
   // 当前选中的维度下，已有的标签列表（排重）
   const existingTagsForDim = useMemo(() => {
@@ -84,6 +87,16 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
       }
       return { ...f, attributes: updatedAttrs };
     }));
+  };
+
+  const toggleQuickTagGroup = (fileId: string, dim: string) => {
+    const groupKey = `${fileId}::${dim}`;
+    setExpandedQuickTagGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
   };
 
   return (
@@ -216,12 +229,16 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
                       // 已在该文件上应用的该维度的标签
                       const fileDimTags = new Set(file.attributes[dim] || []);
                       const usableTags = dimTags.filter(t => !fileDimTags.has(t));
+                      const groupKey = `${file.id}::${dim}`;
+                      const isExpanded = expandedQuickTagGroups.has(groupKey);
+                      const visibleTags = isExpanded ? usableTags : usableTags.slice(0, QUICK_TAG_LIMIT);
+                      const hiddenTagCount = usableTags.length - QUICK_TAG_LIMIT;
                       
                       return usableTags.length > 0 ? (
                         <div key={dim} className="flex items-center gap-1 flex-wrap">
                           <span className="text-[10px] text-gray-400 font-medium">{dim}:</span>
                           <div className="flex flex-wrap gap-1">
-                            {usableTags.slice(0, 4).map(tag => (
+                            {visibleTags.map(tag => (
                               <button
                                 key={tag}
                                 onClick={() => handleFileAddTag(file.id, dim, tag)}
@@ -233,8 +250,15 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
                                 +{tag}
                               </button>
                             ))}
-                            {usableTags.length > 4 && (
-                              <span className="text-[10px] text-gray-400">+{usableTags.length - 4}更多</span>
+                            {hiddenTagCount > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => toggleQuickTagGroup(file.id, dim)}
+                                className="text-[10px] px-1.5 py-0.5 rounded bg-white text-indigo-500 border border-indigo-100 hover:bg-indigo-50 hover:border-indigo-200 transition-colors whitespace-nowrap"
+                                title={isExpanded ? '收起标签' : '展开更多标签'}
+                              >
+                                {isExpanded ? '收起' : `+${hiddenTagCount}更多`}
+                              </button>
                             )}
                           </div>
                         </div>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { GripVertical, FolderTree, Target, RotateCcw, Settings, ChevronDown } from 'lucide-react';
+import { GripVertical, FolderTree, Target, RotateCcw, Settings, ChevronDown, Plus } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface SidebarProps {
@@ -20,6 +20,11 @@ export function Sidebar({ dimensionOrder, setDimensionOrder, availableDimensions
   const handleDragStart = (e: React.DragEvent, id: string) => {
     setDraggedItem(id);
     e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleAddDimension = (dim: string) => {
+    if (dimensionOrder.includes(dim)) return;
+    setDimensionOrder([...dimensionOrder, dim]);
   };
 
   const handleDragEnd = () => {
@@ -88,12 +93,12 @@ export function Sidebar({ dimensionOrder, setDimensionOrder, availableDimensions
         MetaFile
       </div>
 
-      <div className="p-4 flex-1 overflow-y-auto">
-        <div className="mb-8">
+      <div className="p-4 flex-1 min-h-0 overflow-hidden flex flex-col">
+        <div className="mb-4 shrink-0">
           <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">维度编排区 (拖拽排序)</h3>
           <div 
             className={cn(
-              "space-y-2 min-h-[120px] border-2 border-dashed p-3 rounded-xl transition-all duration-300",
+              "space-y-2 min-h-[120px] max-h-[220px] overflow-y-auto border-2 border-dashed p-3 rounded-xl transition-all duration-300",
               draggedItem ? "bg-indigo-50/40 border-indigo-300 shadow-inner" : "bg-white border-border"
             )}
             onDragOver={(e) => e.preventDefault()}
@@ -172,7 +177,7 @@ export function Sidebar({ dimensionOrder, setDimensionOrder, availableDimensions
             <p className="text-[10px] text-gray-400 mb-3 leading-snug shrink-0">将底部的维度属性拽入上方的编排区，自动形成嵌套的目录层级。</p>
             <div 
               className={cn(
-                "space-y-2 min-h-[80px] p-3 rounded-xl border-2 border-dashed transition-all duration-300 overflow-y-auto mb-2",
+                "space-y-2 flex-1 min-h-0 p-3 rounded-xl border-2 border-dashed transition-all duration-300 overflow-y-auto mb-2",
                 draggedItem && dimensionOrder.includes(draggedItem) ? "bg-red-50/50 border-red-200" : "border-transparent bg-transparent"
               )}
               onDragOver={handleDragOver}
@@ -185,12 +190,25 @@ export function Sidebar({ dimensionOrder, setDimensionOrder, availableDimensions
                   onDragStart={(e) => handleDragStart(e, dim)}
                   onDragEnd={handleDragEnd}
                   className={cn(
-                    "flex items-center gap-2 px-3 py-2 bg-[#F5F5F4] border border-transparent rounded-lg cursor-grab active:cursor-grabbing hover:opacity-100 transition-all duration-200",
+                    "group flex items-center justify-between gap-2 px-3 py-2 bg-[#F5F5F4] border border-transparent rounded-lg cursor-grab active:cursor-grabbing hover:opacity-100 transition-all duration-200",
                     draggedItem === dim ? "opacity-30 scale-95" : "opacity-80 hover:bg-white hover:border-gray-300 hover:shadow-sm"
                   )}
                 >
-                  <GripVertical className="w-4 h-4 text-gray-400" />
-                  <span>{dim}</span>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <GripVertical className="w-4 h-4 shrink-0 text-gray-400" />
+                    <span className="truncate" title={dim}>{dim}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleAddDimension(dim);
+                    }}
+                    className="shrink-0 rounded-md p-1 text-gray-400 transition-colors hover:bg-indigo-50 hover:text-indigo-600"
+                    title="加入维度编排"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               ))}
               {unusedDimensions.length === 0 && (
@@ -200,7 +218,7 @@ export function Sidebar({ dimensionOrder, setDimensionOrder, availableDimensions
           </div>
         </div>
 
-        <div className="mt-8 pt-4 border-t border-border space-y-2">
+        <div className="mt-4 shrink-0 pt-4 border-t border-border space-y-2">
           {onOpenManagement && (
             <button 
               onClick={onOpenManagement}
