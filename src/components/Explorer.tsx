@@ -25,6 +25,34 @@ interface ExplorerProps {
   setQuickFilter: (filter: string) => void;
 }
 
+const YEAR_DIMENSION_PATTERN = /(年份|年度|年$)/;
+const YEAR_VALUE_PATTERN = /(19|20)\d{2}/;
+
+const extractYearValue = (value: string) => {
+  const match = value.match(YEAR_VALUE_PATTERN);
+  return match ? Number(match[0]) : null;
+};
+
+const isYearDimensionFolder = (folder: VirtualFolder) => YEAR_DIMENSION_PATTERN.test(folder.dimension);
+
+const getDisplayFolders = (subFolders: Record<string, VirtualFolder>) => {
+  const folders = Object.values(subFolders);
+  if (!folders.some(isYearDimensionFolder)) return folders;
+
+  return folders
+    .map((folder, index) => ({ folder, index }))
+    .sort((a, b) => {
+      const yearA = extractYearValue(a.folder.name);
+      const yearB = extractYearValue(b.folder.name);
+
+      if (yearA !== null && yearB !== null && yearA !== yearB) return yearB - yearA;
+      if (yearA !== null && yearB === null) return -1;
+      if (yearA === null && yearB !== null) return 1;
+      return a.index - b.index;
+    })
+    .map(({ folder }) => folder);
+};
+
 export function Explorer({ 
   currentFolder, 
   currentPath, 
@@ -46,7 +74,7 @@ export function Explorer({
   const storeState = useFileStore();
 
   // normal view data
-  const folders = Object.values(currentFolder.subFolders);
+  const folders = useMemo(() => getDisplayFolders(currentFolder.subFolders), [currentFolder.subFolders]);
   // get files locally at leaf if not searching
   const files = currentFolder.files;
 

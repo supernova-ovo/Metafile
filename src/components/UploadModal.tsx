@@ -3,6 +3,63 @@ import { X, UploadCloud, Tag } from 'lucide-react';
 import type { FileItem } from '../lib/types';
 
 const QUICK_TAG_LIMIT = 4;
+const RECOMMENDATION_LIMIT = 8;
+const FILENAME_HINT_KEYWORDS = [
+  '土地租赁',
+  '租赁',
+  '协议',
+  '合同',
+  '补充',
+  '意向书',
+  '建设用地',
+  '使用权',
+  '决策',
+  '投资',
+  '股权',
+  '前期',
+  '建设期',
+  '运营期',
+];
+
+interface AttributeRecommendation {
+  dimension: string;
+  value: string;
+  score: number;
+}
+
+const normalizeFileNameForMatch = (name: string) =>
+  name
+    .replace(/\.[^.]+$/, '')
+    .toLowerCase()
+    .replace(/\s+/g, '');
+
+const buildTagMatchTokens = (tag: string) => {
+  const normalized = tag.toLowerCase().replace(/\s+/g, '');
+  const tokens = new Set<string>();
+
+  FILENAME_HINT_KEYWORDS.forEach(keyword => {
+    if (normalized.includes(keyword.toLowerCase())) tokens.add(keyword.toLowerCase());
+  });
+
+  for (let size = 4; size >= 3; size -= 1) {
+    for (let i = 0; i <= normalized.length - size; i += 1) {
+      tokens.add(normalized.slice(i, i + size));
+    }
+  }
+
+  return [...tokens].filter(token => token.length >= 3);
+};
+
+const scoreTagAgainstNames = (tag: string, normalizedNames: string[]) => {
+  const normalizedTag = tag.toLowerCase().replace(/\s+/g, '');
+  const tokens = buildTagMatchTokens(tag);
+
+  return normalizedNames.reduce((score, name) => {
+    if (normalizedTag && name.includes(normalizedTag)) return score + 4;
+    const tokenHits = tokens.filter(token => name.includes(token)).length;
+    return score + Math.min(tokenHits, 3);
+  }, 0);
+};
 
 interface UploadModalProps {
   files: FileItem[];
@@ -18,32 +75,64 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
   const [batchDim, setBatchDim] = useState(dimensionOrder[0] || '项目');
   const [batchVal, setBatchVal] = useState('');
   const [expandedQuickTagGroups, setExpandedQuickTagGroups] = useState<Set<string>>(new Set());
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<string>>(() => new Set(files.map(file => file.id)));
+
+  const selectedFiles = useMemo(
+    () => stagedFiles.filter(file => selectedFileIds.has(file.id)),
+    [stagedFiles, selectedFileIds]
+  );
+
+  const selectedCount = selectedFiles.length;
+  const allFilesSelected = stagedFiles.length > 0 && selectedCount === stagedFiles.length;
 
   // 当前选中的维度下，已有的标签列表（排重）
   const existingTagsForDim = useMemo(() => {
     return availableTagValues[batchDim] || [];
   }, [availableTagValues, batchDim]);
 
+  const attributeRecommendations = useMemo<AttributeRecommendation[]>(() => {
+    const targetFiles = selectedFiles.length > 0 ? selectedFiles : stagedFiles;
+    if (targetFiles.length === 0) return [];
+
+    const normalizedNames = targetFiles.map(file => normalizeFileNameForMatch(file.name));
+    const recommendations: AttributeRecommendation[] = [];
+
+    for (const [dimension, tagValues] of Object.entries(availableTagValues)) {
+      for (const value of tagValues) {
+        const alreadyAppliedToAll = targetFiles.every(file => (file.attributes[dimension] || []).includes(value));
+        if (alreadyAppliedToAll) continue;
+
+        const score = scoreTagAgainstNames(value, normalizedNames);
+        if (score > 0) recommendations.push({ dimension, value, score });
+      }
+    }
+
+    return recommendations
+      .sort((a, b) => b.score - a.score || a.dimension.localeCompare(b.dimension, 'zh-CN') || a.value.localeCompare(b.value, 'zh-CN'))
+      .slice(0, RECOMMENDATION_LIMIT);
+  }, [availableTagValues, selectedFiles, stagedFiles]);
+
   // 已应用到所有文件的标签集合（用于标记哪些已有标签已被选）
   const appliedBatchTags = useMemo(() => {
-    if (stagedFiles.length === 0) return new Set<string>();
-    const firstFileTags = new Set(stagedFiles[0].attributes[batchDim] || []);
+    if (selectedFiles.length === 0) return new Set<string>();
+    const firstFileTags = new Set(selectedFiles[0].attributes[batchDim] || []);
     // 检查是否所有文件都有相同的 tag
-    for (let i = 1; i < stagedFiles.length; i++) {
-      const tags = new Set(stagedFiles[i].attributes[batchDim] || []);
+    for (let i = 1; i < selectedFiles.length; i++) {
+      const tags = new Set(selectedFiles[i].attributes[batchDim] || []);
       for (const t of firstFileTags) {
         if (!tags.has(t)) firstFileTags.delete(t);
       }
     }
     return firstFileTags;
-  }, [stagedFiles, batchDim]);
+  }, [selectedFiles, batchDim]);
 
   // ——— 批量操作 ———
 
   const handleBatchApplyTag = (tagValue: string) => {
     const val = tagValue.trim();
-    if (!val) return;
+    if (!val || selectedFileIds.size === 0) return;
     setStagedFiles(prev => prev.map(f => {
+      if (!selectedFileIds.has(f.id)) return f;
       const updatedAttrs = { ...f.attributes };
       if (!updatedAttrs[batchDim]) updatedAttrs[batchDim] = [];
       if (!updatedAttrs[batchDim].includes(val)) {
@@ -56,12 +145,39 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
 
   const handleBatchRemoveTag = (val: string) => {
     setStagedFiles(prev => prev.map(f => {
+      if (!selectedFileIds.has(f.id)) return f;
       const updatedAttrs = { ...f.attributes };
       if (updatedAttrs[batchDim]) {
         updatedAttrs[batchDim] = updatedAttrs[batchDim].filter(v => v !== val);
       }
       return { ...f, attributes: updatedAttrs };
     }));
+  };
+
+  const handleApplyRecommendation = (dimension: string, value: string) => {
+    if (selectedFileIds.size === 0) return;
+    setStagedFiles(prev => prev.map(f => {
+      if (!selectedFileIds.has(f.id)) return f;
+      const updatedAttrs = { ...f.attributes };
+      if (!updatedAttrs[dimension]) updatedAttrs[dimension] = [];
+      if (!updatedAttrs[dimension].includes(value)) {
+        updatedAttrs[dimension] = [...updatedAttrs[dimension], value];
+      }
+      return { ...f, attributes: updatedAttrs };
+    }));
+  };
+
+  const toggleFileSelection = (fileId: string) => {
+    setSelectedFileIds(prev => {
+      const next = new Set(prev);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return next;
+    });
+  };
+
+  const toggleAllFiles = () => {
+    setSelectedFileIds(allFilesSelected ? new Set() : new Set(stagedFiles.map(file => file.id)));
   };
 
   // ——— 单个文件操作 ———
@@ -117,9 +233,28 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
         <div className="p-4 border-b border-border bg-indigo-50/50 space-y-3">
           <h3 className="text-xs font-semibold text-text-secondary uppercase tracking-wider flex items-center gap-2">
             <Tag className="w-4 h-4" />
-            批量打标签 (应用到所有上传文件)
+            批量打标签 (应用到已选文件)
           </h3>
-          
+
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={allFilesSelected}
+                onChange={toggleAllFiles}
+                className="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>已选 {selectedCount} / {stagedFiles.length} 个文件</span>
+            </label>
+            <button
+              type="button"
+              onClick={toggleAllFiles}
+              className="font-medium text-indigo-600 hover:text-indigo-700"
+            >
+              {allFilesSelected ? '取消全选' : '全选'}
+            </button>
+          </div>
+
           {/* 维度选择 + 自定义输入 */}
           <div className="flex gap-2 text-sm">
             <select 
@@ -139,17 +274,40 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
             />
             <button 
               onClick={() => handleBatchApplyTag(batchVal)}
-              className="bg-indigo-600 text-white px-4 py-1.5 rounded hover:bg-indigo-700 transition-colors shadow-sm whitespace-nowrap"
+              disabled={selectedCount === 0}
+              className="bg-indigo-600 text-white px-4 py-1.5 rounded hover:bg-indigo-700 transition-colors shadow-sm whitespace-nowrap disabled:cursor-not-allowed disabled:bg-indigo-300"
             >
               应用
             </button>
           </div>
 
           {/* 选择已有标签（标签云） */}
+          {attributeRecommendations.length > 0 && (
+            <div>
+              <div className="text-xs text-text-secondary mb-1.5">
+                根据文件名推荐属性（点击应用到已选文件）：
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {attributeRecommendations.map(item => (
+                  <button
+                    key={`${item.dimension}-${item.value}`}
+                    type="button"
+                    disabled={selectedCount === 0}
+                    onClick={() => handleApplyRecommendation(item.dimension, item.value)}
+                    className="text-xs px-2 py-0.5 rounded-full border border-indigo-100 bg-white text-indigo-600 hover:bg-indigo-50 hover:border-indigo-200 disabled:cursor-not-allowed disabled:text-gray-300 disabled:border-gray-100"
+                    title={`${item.dimension}: ${item.value}`}
+                  >
+                    + {item.dimension}: {item.value}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {existingTagsForDim.length > 0 && (
             <div>
               <div className="text-xs text-text-secondary mb-1.5">
-                选择已有 <span className="font-semibold text-indigo-600">{batchDim}</span> 标签（点击添加到全部文件）：
+                选择已有 <span className="font-semibold text-indigo-600">{batchDim}</span> 标签（点击添加到已选文件）：
               </div>
               <div className="flex flex-wrap gap-1.5 max-h-[72px] overflow-y-auto">
                 {existingTagsForDim.map(tag => {
@@ -192,9 +350,18 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
             });
 
             return (
-              <div key={file.id} className="border border-border rounded-lg p-3 shadow-sm hover:border-indigo-200 transition-colors">
+              <div key={file.id} className={[
+                'border rounded-lg p-3 shadow-sm transition-colors',
+                selectedFileIds.has(file.id) ? 'border-indigo-200 bg-indigo-50/20' : 'border-border hover:border-indigo-200'
+              ].join(' ')}>
                 {/* 文件名 */}
                 <div className="font-medium text-sm mb-2 truncate flex items-center gap-2" title={file.name}>
+                  <input
+                    type="checkbox"
+                    checked={selectedFileIds.has(file.id)}
+                    onChange={() => toggleFileSelection(file.id)}
+                    className="h-3.5 w-3.5 shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
                   <span className="truncate">{file.name}</span>
                 </div>
                 
