@@ -9,6 +9,7 @@
 const SECTION_ID_FILES = '76c22773-66cb-a51c-359b-5a2872169266';
 
 import { generateUUID, encodeData, apiClient, UPLOAD_URL, getCurrentUserId } from './core/apiClient';
+import { createMissingUploadUrlError, createUploadHttpError, getUploadErrorMessage } from './core/uploadErrors';
 
 /**
  * 构建 multipart/form-data 请求体（含文件）
@@ -47,7 +48,7 @@ async function uploadSingleFile(file: File): Promise<UploadFileResult> {
     });
 
     if (!response.ok) {
-      throw new Error(`上传HTTP错误: ${response.status} ${response.statusText}`);
+      throw createUploadHttpError(response, file);
     }
 
     const result = await response.json();
@@ -56,7 +57,7 @@ async function uploadSingleFile(file: File): Promise<UploadFileResult> {
     const url = result.url || result.data?.url || result.path || result.data?.path || '';
     
     if (!url) {
-      throw new Error('上传响应中未找到文件URL');
+      throw createMissingUploadUrlError();
     }
 
     return {
@@ -69,7 +70,7 @@ async function uploadSingleFile(file: File): Promise<UploadFileResult> {
       url: '',
       originalName: file.name,
       success: false,
-      error: error.message || '上传文件失败',
+      error: getUploadErrorMessage(error),
     };
   }
 }
