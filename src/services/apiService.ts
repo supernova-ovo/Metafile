@@ -11,6 +11,7 @@
  */
 
 import { generateUUID, encodeData, apiClient, getCurrentUserId } from './core/apiClient';
+import { queryAllPages } from './core/pagination';
 
 const SECTION_IDS = {
   FILES: '76c22773-66cb-a51c-359b-5a2872169266',
@@ -190,6 +191,15 @@ export async function queryFiles(page = 1, pageSize = 200): Promise<{ ROWS: File
     _pagesize: String(pageSize),
   });
   return { ROWS: result.ROWS || [], TOTAL: result.TOTAL || 0 };
+}
+
+/**
+ * Loads the complete file table for the explorer's in-memory store.
+ * A first-page-only request loses valid records once the table grows beyond
+ * the requested page size.
+ */
+export async function queryAllFiles(pageSize = 500): Promise<{ ROWS: FileRow[]; TOTAL: number }> {
+  return queryAllPages<FileRow>((page, size) => queryFiles(page, size), pageSize);
 }
 
 async function queryFileById(sys_id: string): Promise<FileRow | null> {
@@ -1146,26 +1156,14 @@ export async function loadFileAttributes(fileId: string): Promise<Record<string,
 }
 
 async function queryAllRows(id: string, pageSize: number): Promise<any[]> {
-  const rows: any[] = [];
-  let pageIndex = 1;
-  let total = Number.POSITIVE_INFINITY;
-
-  while (rows.length < total) {
-    const result = await apiClient({
+  const result = await queryAllPages<any>((pageIndex, size) => apiClient({
       id,
       mode: 'query',
       _pageindex: String(pageIndex),
-      _pagesize: String(pageSize),
-    });
-    const pageRows = result.ROWS || [];
-    rows.push(...pageRows);
-    total = Number(result.TOTAL ?? rows.length);
+      _pagesize: String(size),
+    }), pageSize);
 
-    if (pageRows.length === 0) break;
-    pageIndex += 1;
-  }
-
-  return rows;
+  return result.ROWS;
 }
 
 export async function loadAllFileAttributes(): Promise<Record<string, Record<string, string[]>>> {
@@ -1255,7 +1253,7 @@ export async function auditFileTagRelations(): Promise<{
 // 暴露给控制台供测试使用
 if (typeof window !== 'undefined') {
   (window as any).apiService = {
-    queryFiles, insertFileRecord, insertFileRecords, updateFileRecord, deleteFileRecord,
+    queryFiles, queryAllFiles, insertFileRecord, insertFileRecords, updateFileRecord, deleteFileRecord,
     queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, updateTag, deleteTagWithRelations, mergeTagInto, queryAllTags,
     queryFileTags, removeAllFileTags, deleteFileWithRelations,
     getPreference, upsertPreference, waitForFileRecord, syncAttributes, loadFileAttributes, loadAllFileAttributes,

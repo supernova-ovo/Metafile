@@ -188,7 +188,7 @@ export const fileService = {
       const resolvedPendingIds: string[] = [];
       const resolvedPendingRenameIds: string[] = [];
 
-      const { ROWS, TOTAL } = await apiService.queryFiles(1, 500);
+      const { ROWS, TOTAL } = await apiService.queryAllFiles(500);
       // console.log(`[DB] queryFiles 返回: TOTAL=${TOTAL}, ROWS=${ROWS.length}`);
 
       if (TOTAL === 0) {
