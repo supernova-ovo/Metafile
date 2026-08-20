@@ -6,6 +6,7 @@ import { MAX_SAVED_VIEW_NAME_LENGTH } from '../lib/savedViews';
 interface SavedViewDialogProps {
   title: string;
   view: SavedView | null;
+  initialName?: string;
   currentPath: string[];
   currentDimensionOrder: string[];
   onCancel: () => void;
@@ -17,6 +18,7 @@ const pathLabel = (path: string[]) => path.length > 0 ? path.join(' / ') : 'å…¨é
 export function SavedViewDialog({
   title,
   view,
+  initialName = '',
   currentPath,
   currentDimensionOrder,
   onCancel,
@@ -27,9 +29,9 @@ export function SavedViewDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    setName(view?.name || '');
+    setName(view?.name || initialName);
     setReplaceTarget(!view);
-  }, [view]);
+  }, [initialName, view]);
 
   const handleSubmit = async () => {
     const trimmed = name.trim();

@@ -3,7 +3,7 @@ import type { FileItem } from '../lib/types';
 import type { FileRow } from './apiService';
 import { storageService } from './storageService';
 import * as apiService from './apiService';
-import { getCurrentUserId } from './core/apiClient';
+import { getCurrentUserId, isDevAuthBypassEnabled } from './core/apiClient';
 
 const FILE_TYPE_DIMENSION = '文件类型';
 const LOCALSTORAGE_KEY = 'metafile_files';
@@ -176,6 +176,12 @@ export const fileService = {
    * 如果数据库为空则自动写入种子数据（mockFiles）
    */
   async initFromDb(): Promise<FileItem[]> {
+    if (isDevAuthBypassEnabled()) {
+      const files = this.getFiles();
+      markFilesAsSynced(files);
+      return files;
+    }
+
     try {
       const cachedFiles = storageService.getJson<FileItem[] | null>(LOCALSTORAGE_KEY, null);
       const cachedFilesById = new Map(
@@ -332,7 +338,7 @@ export const fileService = {
    */
   saveFiles(files: FileItem[], options?: { skipDbSync?: boolean }) {
     storageService.setJson(LOCALSTORAGE_KEY, files);
-    if (options?.skipDbSync) return;
+    if (options?.skipDbSync || isDevAuthBypassEnabled()) return;
     latestPendingFiles = files;
     if (pendingSaveTimer) {
       clearTimeout(pendingSaveTimer);
@@ -347,6 +353,8 @@ export const fileService = {
    * 异步写入数据库
    */
   async saveToDbAsync(files: FileItem[]): Promise<void> {
+    if (isDevAuthBypassEnabled()) return;
+
     if (isSavingToDb) {
       latestPendingFiles = files;
       return;
@@ -440,22 +448,24 @@ export const fileService = {
 
     const targetFile = updatedFiles.find(f => f.id === fileId);
 
-    apiService.syncAttributes(fileId, newAttributes)
-      .then(() => {
-        if (targetFile) {
-          lastSyncedFingerprints.set(fileId, getFileFingerprint(targetFile));
-        }
-        clearPendingAttributeSync([fileId]);
-      })
-      .catch(e => {
-        console.warn('[DB]', e);
-        emitSyncError({
-          title: '标签保存失败',
-          message: `${targetFile?.name || '当前文件'} 的标签未能同步到后端，刷新后可能暂时不可见，请稍后重试。`,
-          fileId,
-          error: e,
+    if (!isDevAuthBypassEnabled()) {
+      apiService.syncAttributes(fileId, newAttributes)
+        .then(() => {
+          if (targetFile) {
+            lastSyncedFingerprints.set(fileId, getFileFingerprint(targetFile));
+          }
+          clearPendingAttributeSync([fileId]);
+        })
+        .catch(e => {
+          console.warn('[DB]', e);
+          emitSyncError({
+            title: '标签保存失败',
+            message: `${targetFile?.name || '当前文件'} 的标签未能同步到后端，刷新后可能暂时不可见，请稍后重试。`,
+            fileId,
+            error: e,
+          });
         });
-      });
+    }
 
     return updatedFiles;
   },
@@ -470,23 +480,27 @@ export const fileService = {
     markPendingFileRename(fileId, nextName);
 
     const now = new Date().toISOString();
-    apiService.updateFileRecord(fileId, {
-      WJMC: nextName,
-      sys_muser: getCurrentUserId(undefined, 'uploader'),
-      sys_mdate: now,
-    })
-      .then(() => {
-        if (targetFile) {
-          lastSyncedFingerprints.set(fileId, getFileFingerprint(targetFile));
-        }
-        clearPendingFileRename([fileId]);
+    if (!isDevAuthBypassEnabled()) {
+      apiService.updateFileRecord(fileId, {
+        WJMC: nextName,
+        sys_muser: getCurrentUserId(undefined, 'uploader'),
+        sys_mdate: now,
       })
-      .catch(e => console.warn('[DB] 文件重命名同步失败:', e));
+        .then(() => {
+          if (targetFile) {
+            lastSyncedFingerprints.set(fileId, getFileFingerprint(targetFile));
+          }
+          clearPendingFileRename([fileId]);
+        })
+        .catch(e => console.warn('[DB] 文件重命名同步失败:', e));
+    }
 
     return updatedFiles;
   },
 
   async syncUploadedAttributes(files: FileItem[]): Promise<void> {
+    if (isDevAuthBypassEnabled()) return;
+
     for (const file of files) {
       try {
         await apiService.syncAttributes(file.id, file.attributes);
@@ -523,6 +537,8 @@ export const fileService = {
   },
 
   async hydrateFileAttributes(files: FileItem[], fileId: string): Promise<FileItem[]> {
+    if (isDevAuthBypassEnabled()) return files;
+
     if (hydratedAttributeFileIds.has(fileId)) return files;
     const target = files.find((f) => f.id === fileId);
     if (!target) return files;
@@ -543,6 +559,12 @@ export const fileService = {
   },
 
   async deleteFile(fileId: string): Promise<boolean> {
+    if (isDevAuthBypassEnabled()) {
+      clearPendingAttributeSync([fileId]);
+      clearPendingFileRename([fileId]);
+      return true;
+    }
+
     const deleted = await apiService.deleteFileWithRelations(fileId);
     if (!deleted) {
       throw new Error('删除后端文件记录失败');

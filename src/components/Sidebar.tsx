@@ -123,9 +123,19 @@ export function Sidebar({
           <p className="mb-2 px-2 text-[10px] leading-snug text-gray-400">管理员在系统设置中维护，点击后直达目标文件夹。</p>
           <div className="space-y-1">
             {displayedOrganizationViews.map(view => (
-              <button key={view.id} onClick={() => onApplyView(view)} className="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-gray-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700" title={pathLabel(view.currentPath)}>
-                <Building2 className="h-3.5 w-3.5 shrink-0 text-indigo-400" />
-                <span className="min-w-0 flex-1 truncate">{view.name}</span>
+              <button
+                key={view.id}
+                onClick={() => onApplyView(view)}
+                className="group flex w-full items-start gap-2 rounded-md px-2 py-2 text-left text-sm text-gray-700 transition-colors hover:bg-indigo-50 hover:text-indigo-700"
+                title={`${view.name} - ${pathLabel(view.currentPath)}`}
+              >
+                <Building2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-indigo-400" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{view.name}</span>
+                  <span className="mt-0.5 block truncate text-[10px] leading-4 text-gray-400 group-hover:text-indigo-500">
+                    {pathLabel(view.currentPath)}
+                  </span>
+                </span>
               </button>
             ))}
             {visibleOrganizationViews.length === 0 && (

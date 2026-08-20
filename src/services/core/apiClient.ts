@@ -22,6 +22,10 @@ export function getAuthToken(): string {
   return '';
 }
 
+export function isDevAuthBypassEnabled(): boolean {
+  return Boolean(isDev && typeof import.meta !== 'undefined' && import.meta.env?.VITE_SKIP_AUTH === 'true');
+}
+
 export function isHtmlLoginResponse(text: string): boolean {
   if (!text) return false;
   return (
@@ -111,6 +115,10 @@ export function buildLoginRedirectUrl(currentHref?: string): string {
  */
 export function redirectToLogin(): void {
   if (typeof window === 'undefined') return;
+  if (isDevAuthBypassEnabled()) {
+    console.warn('[AUTH] 本地开发已启用 VITE_SKIP_AUTH=true，跳过 SSO 登录跳转');
+    return;
+  }
   const target = buildLoginRedirectUrl(window.location.href);
   // 用 replace 避免在浏览器历史里留下未授权访问的痕迹
   window.location.replace(target);
@@ -249,6 +257,10 @@ export async function apiClient(formFields: Record<string, string>): Promise<any
  * - 平台约定：Cookie 中同时存在 ud / uid / un 即视为已登录
  */
 export async function checkSession(): Promise<boolean> {
+  if (isDevAuthBypassEnabled()) {
+    return true;
+  }
+
   if (getAuthToken()) {
     return true;
   }

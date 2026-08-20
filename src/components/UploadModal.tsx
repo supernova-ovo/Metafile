@@ -85,6 +85,18 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
   const selectedCount = selectedFiles.length;
   const allFilesSelected = stagedFiles.length > 0 && selectedCount === stagedFiles.length;
 
+  const inheritedAttributeEntries = useMemo(() => {
+    if (stagedFiles.length === 0) return [];
+    const firstFileAttributes = stagedFiles[0].attributes;
+
+    return Object.entries(firstFileAttributes)
+      .filter(([, values]) => values.length > 0)
+      .filter(([dimension, values]) => stagedFiles.every(file => {
+        const fileValues = file.attributes[dimension] || [];
+        return values.every(value => fileValues.includes(value));
+      }));
+  }, [stagedFiles]);
+
   // 当前选中的维度下，已有的标签列表（排重）
   const existingTagsForDim = useMemo(() => {
     return availableTagValues[batchDim] || [];
@@ -228,6 +240,22 @@ export function UploadModal({ files, onConfirm, onCancel, dimensionOrder, availa
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        {inheritedAttributeEntries.length > 0 && (
+          <div className="border-b border-indigo-100 bg-indigo-50/60 px-4 py-3 text-xs text-indigo-900">
+            <div className="mb-2 flex items-center gap-1.5 font-semibold">
+              <Tag className="h-3.5 w-3.5" />
+              将继承当前视图属性
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {inheritedAttributeEntries.map(([dimension, values]) => (
+                <span key={dimension} className="rounded-full border border-indigo-100 bg-white px-2 py-0.5 text-indigo-700">
+                  <span className="text-indigo-400">{dimension}:</span> {values.join('、')}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         
         {/* 批量打标签区域 */}
         <div className="p-4 border-b border-border bg-indigo-50/50 space-y-3">

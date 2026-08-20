@@ -7,6 +7,7 @@ import { DeleteFileModal } from './components/DeleteFileModal';
 import { StatusToast } from './components/StatusToast';
 import { UploadModal } from './components/UploadModal';
 import { Management } from './components/Management';
+import { SavedViewDialog } from './components/SavedViewDialog';
 import { Loader2, UploadCloud } from 'lucide-react';
 import { buildAvailableTagValues } from './lib/mock-data';
 import type { FileItem, ActiveFilter, SavedView } from './lib/types';
@@ -24,6 +25,22 @@ import { JobQueueOverlay } from './components/core/JobQueueOverlay';
 import { PreviewModal } from './components/core/PreviewModal';
 import { useJobStore } from './store/useJobStore';
 import { jobQueue } from './services/jobQueue';
+import { storageService } from './services/storageService';
+import { isDevAuthBypassEnabled } from './services/core/apiClient';
+import { normalizeSavedViews, reorderSavedViews } from './lib/savedViews';
+
+const pathLabel = (path: string[]) => path.length > 0 ? path.join(' / ') : '全部文件';
+const LOCAL_ORGANIZATION_VIEWS_KEY = 'metafile_organization_views';
+
+function loadLocalOrganizationViews(): SavedView[] {
+  return normalizeSavedViews(storageService.getJson<unknown>(LOCAL_ORGANIZATION_VIEWS_KEY, []));
+}
+
+function saveLocalOrganizationViews(views: SavedView[]): SavedView[] {
+  const normalizedViews = reorderSavedViews(views);
+  storageService.setJson(LOCAL_ORGANIZATION_VIEWS_KEY, normalizedViews);
+  return normalizedViews;
+}
 
 function App() {
   const storeFiles = useFileStore(state => state.files);
@@ -76,6 +93,7 @@ function App() {
   const [isDeletingFile, setIsDeletingFile] = useState(false);
   const [deleteFileError, setDeleteFileError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ title: string; message: string; tone: 'success' | 'error' } | null>(null);
+  const [isSaveCurrentViewDialogOpen, setIsSaveCurrentViewDialogOpen] = useState(false);
   
   // View mode
   const [viewMode, setViewMode] = useState<'explorer' | 'management'>('explorer');
@@ -94,6 +112,11 @@ function App() {
     setToast({ title, message, tone });
   }, []);
 
+  const suggestedSavedViewName = useMemo(() => {
+    if (currentPath.length > 0) return pathLabel(currentPath);
+    return dimensionOrder.length > 0 ? `${dimensionOrder.join(' / ')} 视图` : '全部文件';
+  }, [currentPath, dimensionOrder]);
+
   // 启动时异步从数据库初始化（自动写入种子数据）
   useEffect(() => {
     if (hasInitRunRef.current) return;
@@ -101,6 +124,24 @@ function App() {
 
     const initFromDb = async () => {
       try {
+        if (isDevAuthBypassEnabled()) {
+          const localFiles = fileService.getFiles();
+          const localPreferences = {
+            dimensionOrder: preferenceService.getDimensionOrder(),
+            currentPath: preferenceService.getCurrentPath(),
+            selectedFileId: preferenceService.getSelectedFileId(),
+          };
+
+          setFiles(localFiles, true);
+          setDimensionOrder(localPreferences.dimensionOrder);
+          setCurrentPath(localPreferences.currentPath);
+          setSelectedFileId(localPreferences.selectedFileId);
+          setOrganizationViews(loadLocalOrganizationViews());
+          setDimensions(mockAvailableDimensions.map(d => ({ sys_id: d, WHMC: d, WHMS: d })));
+          setKnownTags([]);
+          return;
+        }
+
         // console.log('[App] 正在从数据库初始化...');
         // 并行初始化文件 + 偏好 + 维度
         const [dbFiles, dbPrefs, dbDims, dbTags, dbOrganizationViews] = await Promise.all([
@@ -365,14 +406,45 @@ function App() {
 
     if (restoredPathIsPartial) {
       showToast('预设路径已变化', `“${view.name}”已跳转到仍可访问的上级目录。请在系统设置中更新该预设。`, 'error');
+    } else {
+      showToast('已切换预设视图', `已进入“${view.name}”。`, 'success');
     }
   }, [availableDimensions, dimensionOrder, files, showToast]);
 
   const handleOrganizationViewsChange = useCallback(async (views: SavedView[]) => {
+    if (isDevAuthBypassEnabled()) {
+      const savedViews = saveLocalOrganizationViews(views);
+      setOrganizationViews(savedViews);
+      return savedViews;
+    }
+
     const savedViews = await apiService.saveOrganizationViews(views);
     setOrganizationViews(savedViews);
     return savedViews;
   }, []);
+
+  const handleSaveCurrentView = useCallback(async ({ name }: { name: string; replaceTarget: boolean }) => {
+    const now = new Date().toISOString();
+    const nextView: SavedView = {
+      id: apiService.generateUUID(),
+      name,
+      dimensionOrder: [...dimensionOrder],
+      currentPath: [...currentPath],
+      sortOrder: organizationViews.length,
+      enabled: true,
+      updatedAt: now,
+    };
+
+    try {
+      await handleOrganizationViewsChange([...organizationViews, nextView]);
+      setIsSaveCurrentViewDialogOpen(false);
+      showToast('预设视图已保存', `“${name}”已加入左侧快捷入口。`, 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '请稍后重试。';
+      showToast('预设视图保存失败', message, 'error');
+      throw error;
+    }
+  }, [currentPath, dimensionOrder, handleOrganizationViewsChange, organizationViews, showToast]);
 
   const handleUploadConfirm = async (finalFiles: FileItem[]) => {
     // Add to FileStore immediately (optimistic update)
@@ -455,6 +527,18 @@ function App() {
         />
       )}
 
+      {isSaveCurrentViewDialogOpen && (
+        <SavedViewDialog
+          title="保存当前视图"
+          view={null}
+          initialName={suggestedSavedViewName}
+          currentPath={currentPath}
+          currentDimensionOrder={dimensionOrder}
+          onCancel={() => setIsSaveCurrentViewDialogOpen(false)}
+          onSubmit={handleSaveCurrentView}
+        />
+      )}
+
       {pendingDeleteFileId && (() => {
         const pendingDeleteFile = files.find(file => file.id === pendingDeleteFileId);
         if (!pendingDeleteFile) return null;
@@ -524,6 +608,7 @@ function App() {
               setActiveFilters={setActiveFilters}
               quickFilter={quickFilter}
               setQuickFilter={setQuickFilter}
+              onSaveCurrentView={() => setIsSaveCurrentViewDialogOpen(true)}
             />
           </ErrorBoundary>
           <ErrorBoundary>

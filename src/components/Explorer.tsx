@@ -1,4 +1,4 @@
-import { ChevronRight, Folder, File as FileIcon, FileText, Image, FileSpreadsheet, Presentation, Search, X, Tag } from 'lucide-react';
+import { Bookmark, ChevronRight, Folder, File as FileIcon, FileText, Image, FileSpreadsheet, Presentation, Search, X, Tag } from 'lucide-react';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { VirtualFolder, ActiveFilter } from '../lib/types';
@@ -23,6 +23,7 @@ interface ExplorerProps {
   setActiveFilters: (filters: ActiveFilter[]) => void;
   quickFilter: string;
   setQuickFilter: (filter: string) => void;
+  onSaveCurrentView?: () => void;
 }
 
 const YEAR_DIMENSION_PATTERN = /(年份|年度|年$)/;
@@ -66,7 +67,8 @@ export function Explorer({
   activeFilters,
   setActiveFilters,
   quickFilter,
-  setQuickFilter
+  setQuickFilter,
+  onSaveCurrentView
 }: ExplorerProps) {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -173,25 +175,38 @@ export function Explorer({
   return (
     <div className="flex-1 bg-white flex flex-col h-full overflow-hidden relative">
       {/* Breadcrumbs */}
-      <div className="h-14 border-b border-border flex items-center px-6 text-sm shrink-0">
-        <button 
-          onClick={() => navigatePath(-1)}
-          className="hover:bg-accent px-2 py-1 rounded text-text-secondary hover:text-primary transition-colors font-medium"
-        >
-          全部
-        </button>
-        {currentPath.map((segment, idx) => (
-          <Fragment key={idx}>
-            <ChevronRight className="w-4 h-4 mx-1 text-gray-300" />
-            <button 
-              onClick={() => navigatePath(idx)}
-              className="hover:bg-accent px-2 py-1 rounded text-primary transition-colors flex items-center gap-1.5"
-            >
-              <span className="text-gray-400 text-xs font-medium bg-gray-100 px-1.5 py-0.5 rounded">{dimensionOrder[idx]}</span>
-              <span className="font-medium">{segment}</span>
-            </button>
-          </Fragment>
-        ))}
+      <div className="h-14 border-b border-border flex items-center justify-between gap-4 px-6 text-sm shrink-0">
+        <div className="flex min-w-0 items-center overflow-x-auto no-scrollbar">
+          <button
+            onClick={() => navigatePath(-1)}
+            className="hover:bg-accent px-2 py-1 rounded text-text-secondary hover:text-primary transition-colors font-medium shrink-0"
+          >
+            全部
+          </button>
+          {currentPath.map((segment, idx) => (
+            <Fragment key={idx}>
+              <ChevronRight className="w-4 h-4 mx-1 text-gray-300 shrink-0" />
+              <button
+                onClick={() => navigatePath(idx)}
+                className="hover:bg-accent px-2 py-1 rounded text-primary transition-colors flex items-center gap-1.5 shrink-0"
+              >
+                <span className="text-gray-400 text-xs font-medium bg-gray-100 px-1.5 py-0.5 rounded">{dimensionOrder[idx]}</span>
+                <span className="font-medium">{segment}</span>
+              </button>
+            </Fragment>
+          ))}
+        </div>
+        {onSaveCurrentView && (
+          <button
+            type="button"
+            onClick={onSaveCurrentView}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-100 hover:text-indigo-800"
+            title="保存当前维度顺序和路径为预设视图"
+          >
+            <Bookmark className="h-3.5 w-3.5" />
+            保存当前视图
+          </button>
+        )}
       </div>
 
       {/* Omnisearch Bar */}

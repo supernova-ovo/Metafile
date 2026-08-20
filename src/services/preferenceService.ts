@@ -1,6 +1,7 @@
 import type { AppPreferences } from '../types/api';
 import { storageService } from './storageService';
 import * as apiService from './apiService';
+import { isDevAuthBypassEnabled } from './core/apiClient';
 
 // LocalStorage 键名（降级用）
 const LS_KEYS = {
@@ -112,6 +113,8 @@ function loadPreferencesFromLocal(): AppPreferences {
 }
 
 function schedulePreferenceFlush(delayMs = SAVE_DEBOUNCE_MS) {
+  if (isDevAuthBypassEnabled()) return;
+
   if (pendingTimer) {
     clearTimeout(pendingTimer);
   }
@@ -145,6 +148,12 @@ function schedulePreferenceFlush(delayMs = SAVE_DEBOUNCE_MS) {
 }
 
 function enqueuePreferenceUpdate(patch: PreferencePatch) {
+  if (isDevAuthBypassEnabled()) {
+    if (cachedPreferences) cachedPreferences = mergePreferencePatch(cachedPreferences, patch);
+    savePendingPreferencePatch({});
+    return;
+  }
+
   pendingPrefs = { ...readPendingPreferencePatch(), ...pendingPrefs, ...patch };
   savePendingPreferencePatch(pendingPrefs);
   schedulePreferenceFlush();
@@ -173,6 +182,13 @@ export const preferenceService = {
    * 异步从数据库初始化偏好
    */
   async initFromDb(): Promise<AppPreferences> {
+    if (isDevAuthBypassEnabled()) {
+      const preferences = loadPreferencesFromLocal();
+      cachedPreferences = { ...preferences };
+      persistPreferencesToLocal(preferences);
+      return preferences;
+    }
+
     pendingPrefs = readPendingPreferencePatch();
     const dbPref = await loadPreferencesFromDb();
     if (dbPref) {
