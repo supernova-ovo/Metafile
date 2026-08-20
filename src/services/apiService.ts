@@ -12,6 +12,8 @@
 
 import { generateUUID, encodeData, apiClient, getCurrentUserId } from './core/apiClient';
 import { queryAllPages } from './core/pagination';
+import type { SavedView } from '../lib/types';
+import { parseSavedViews, reorderSavedViews } from '../lib/savedViews';
 
 const SECTION_IDS = {
   FILES: '76c22773-66cb-a51c-359b-5a2872169266',
@@ -20,6 +22,11 @@ const SECTION_IDS = {
   FILE_TAGS: '1971f501-6a69-bff0-c4f2-945c18db79c1',
   PREFERENCES: '383be00c-b492-3ce0-373a-43b6a3bedaad',
 } as const;
+
+// A reserved preference record stores the organization-wide shortcuts. Keeping
+// it separate from user preference rows avoids a schema migration while still
+// making the configuration shared across browsers and devices.
+const ORGANIZATION_PRESETS_USER_ID = 'metafile-organization-presets';
 
 export { generateUUID };
 
@@ -88,6 +95,12 @@ const DICTIONARY_RECORD_READY_DELAYS_MS = [200, 500, 1000, 2000];
 function buildTagKey(dimId: string, tagValue: string): string {
   return `${dimId}::${tagValue}`;
 }
+
+export type PreferenceUpdate = {
+  dimensionOrder?: string[];
+  currentPath?: string[];
+  selectedFileId?: string | null;
+};
 
 function normalizeId(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
@@ -776,25 +789,53 @@ function getPreferenceUserId(): string {
   return getCurrentUserId(undefined, DEFAULT_USER_ID);
 }
 
-export async function getPreference(): Promise<PrefRow | null> {
-  const userId = getPreferenceUserId();
+function parseStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+export function readPreferencePath(pref: PrefRow | null | undefined): string[] {
+  if (!pref?.DQDL) return [];
+  try {
+    const parsed = JSON.parse(pref.DQDL);
+    // Older records stored the path directly as an array.
+    if (Array.isArray(parsed)) return parseStringArray(parsed);
+    return parsed && typeof parsed === 'object' ? parseStringArray(parsed.currentPath) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function queryPreferenceByUserId(userId: string): Promise<PrefRow | null> {
   const result = await apiClient({
     id: SECTION_IDS.PREFERENCES,
     mode: 'query',
     where: JSON.stringify({ YHID: userId }),
     _pageindex: '1',
-    _pagesize: '1',
+    _pagesize: '100',
   });
 
-  const rows = result.ROWS || [];
-  return rows.length > 0 ? rows[0] : null;
+  const matchedRows = filterRowsByIdField<PrefRow>(result.ROWS || [], 'YHID', userId, 'queryPreferenceByUserId');
+  if (matchedRows.length > 0) return matchedRows[0];
+
+  // Some deployments ignore field predicates. Fall back to a complete local
+  // lookup so a shared-preference row cannot be confused with another user.
+  const allRows = await queryAllRows(SECTION_IDS.PREFERENCES, 5000);
+  const fallbackRow = allRows.find((row: PrefRow) => idsEqual(row.YHID, userId));
+  if (fallbackRow) {
+    console.warn(`[API_GUARD] queryPreferenceByUserId 使用全量分页回查命中 YHID=${userId}，后端按 YHID 查询可能未生效。`);
+  }
+  return fallbackRow || null;
 }
 
-export async function upsertPreference(prefs: {
-  dimensionOrder?: string[];
-  currentPath?: string[];
-  selectedFileId?: string | null;
-}): Promise<boolean> {
+export async function getPreference(): Promise<PrefRow | null> {
+  return queryPreferenceByUserId(getPreferenceUserId());
+}
+
+export async function upsertPreference(prefs: PreferenceUpdate): Promise<boolean> {
   const existing = await getPreference();
   const userId = getPreferenceUserId();
 
@@ -889,6 +930,52 @@ async function syncAttributesWithRetry(
       await wait(RETRIABLE_API_DELAYS_MS[attempt]);
     }
   }
+}
+
+/** Organization presets are managed only from the system-settings view. */
+export async function queryOrganizationViews(): Promise<SavedView[]> {
+  const row = await queryPreferenceByUserId(ORGANIZATION_PRESETS_USER_ID);
+  return parseSavedViews(row?.DQDL);
+}
+
+export async function saveOrganizationViews(views: SavedView[]): Promise<SavedView[]> {
+  const normalizedViews = reorderSavedViews(views);
+  const existing = await queryPreferenceByUserId(ORGANIZATION_PRESETS_USER_ID);
+  const payload = JSON.stringify(normalizedViews);
+
+  if (existing?.sys_id) {
+    await apiClient({
+      id: SECTION_IDS.PREFERENCES,
+      mode: 'update',
+      _p_data: encodeData({
+        updated: [{
+          sys_id: existing.sys_id,
+          DQDL: payload,
+        }],
+      }),
+    });
+    return normalizedViews;
+  }
+
+  await apiClient({
+    id: SECTION_IDS.PREFERENCES,
+    mode: 'update',
+    _p_data: encodeData({
+      updated: [{
+        sys_id: generateUUID(),
+        YHID: ORGANIZATION_PRESETS_USER_ID,
+        WHPX: JSON.stringify([]),
+        DQDL: payload,
+        XZWJID: null,
+        sys_user: getPreferenceUserId(),
+        sys_muser: getPreferenceUserId(),
+        sys_valid: 1,
+        sys_batchid: generateUUID(),
+        sys_epsid: generateUUID(),
+      }],
+    }),
+  });
+  return normalizedViews;
 }
 
 export async function syncAttributes(
@@ -1256,7 +1343,7 @@ if (typeof window !== 'undefined') {
     queryFiles, queryAllFiles, insertFileRecord, insertFileRecords, updateFileRecord, deleteFileRecord,
     queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, updateTag, deleteTagWithRelations, mergeTagInto, queryAllTags,
     queryFileTags, removeAllFileTags, deleteFileWithRelations,
-    getPreference, upsertPreference, waitForFileRecord, syncAttributes, loadFileAttributes, loadAllFileAttributes,
+    getPreference, upsertPreference, queryOrganizationViews, saveOrganizationViews, waitForFileRecord, syncAttributes, loadFileAttributes, loadAllFileAttributes,
     auditFileTagRelations
   };
 }

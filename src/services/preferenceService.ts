@@ -18,7 +18,11 @@ export const defaultPreferences: AppPreferences = {
 
 // 内存缓存，避免频繁查询数据库
 let cachedPreferences: AppPreferences | null = null;
-type PreferencePatch = { dimensionOrder?: string[]; currentPath?: string[]; selectedFileId?: string | null };
+type PreferencePatch = {
+  dimensionOrder?: string[];
+  currentPath?: string[];
+  selectedFileId?: string | null;
+};
 
 let pendingPrefs: PreferencePatch = {};
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -77,7 +81,6 @@ function clearFlushedPreferencePatch(payload: PreferencePatch) {
   if (preferencePatchValueMatches(current, payload, 'selectedFileId')) {
     delete next.selectedFileId;
   }
-
   pendingPrefs = next;
   savePendingPreferencePatch(next);
 }
@@ -157,7 +160,7 @@ async function loadPreferencesFromDb(): Promise<AppPreferences | null> {
 
     return {
       dimensionOrder: pref.WHPX ? JSON.parse(pref.WHPX) : defaultPreferences.dimensionOrder,
-      currentPath: pref.DQDL ? JSON.parse(pref.DQDL) : defaultPreferences.currentPath,
+      currentPath: apiService.readPreferencePath(pref),
       selectedFileId: pref.XZWJID || null,
     };
   } catch {

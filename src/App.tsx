@@ -9,7 +9,9 @@ import { UploadModal } from './components/UploadModal';
 import { Management } from './components/Management';
 import { Loader2, UploadCloud } from 'lucide-react';
 import { buildAvailableTagValues } from './lib/mock-data';
-import type { FileItem, ActiveFilter } from './lib/types';
+import type { FileItem, ActiveFilter, SavedView } from './lib/types';
+import { buildTree } from './lib/tree';
+import { createViewPathRestorer } from './lib/viewPathRestorer';
 import { fileService } from './services/fileService';
 import { preferenceService } from './services/preferenceService';
 import * as apiService from './services/apiService';
@@ -36,6 +38,7 @@ function App() {
   const [dimensionOrder, setDimensionOrder] = useState<string[]>(() => preferenceService.getDimensionOrder());
   const [currentPath, setCurrentPath] = useState<string[]>(() => preferenceService.getCurrentPath());
   const [selectedFileId, setSelectedFileId] = useState<string | null>(() => preferenceService.getSelectedFileId());
+  const [organizationViews, setOrganizationViews] = useState<SavedView[]>([]);
   const [dimensions, setDimensions] = useState<DimRow[]>(
     mockAvailableDimensions.map(d => ({ sys_id: d, WHMC: d, WHMS: d }))
   );
@@ -85,6 +88,7 @@ function App() {
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const isBootstrappingRef = useRef(true);
   const hasInitRunRef = useRef(false);
+  const viewPathRestorerRef = useRef(createViewPathRestorer());
 
   const showToast = useCallback((title: string, message: string, tone: 'success' | 'error') => {
     setToast({ title, message, tone });
@@ -99,11 +103,12 @@ function App() {
       try {
         // console.log('[App] 正在从数据库初始化...');
         // 并行初始化文件 + 偏好 + 维度
-        const [dbFiles, dbPrefs, dbDims, dbTags] = await Promise.all([
+        const [dbFiles, dbPrefs, dbDims, dbTags, dbOrganizationViews] = await Promise.all([
           fileService.initFromDb(),
           preferenceService.initFromDb(),
           apiService.queryAllDimensions(),
           apiService.queryAllTags().catch(() => []),
+          apiService.queryOrganizationViews().catch(() => []),
         ]);
 
         // 更新状态
@@ -111,6 +116,12 @@ function App() {
         setDimensionOrder(dbPrefs.dimensionOrder);
         setCurrentPath(dbPrefs.currentPath);
         setSelectedFileId(dbPrefs.selectedFileId);
+        setOrganizationViews(dbOrganizationViews);
+        const databaseOrderChanged = dbPrefs.dimensionOrder.length !== dimensionOrder.length
+          || dbPrefs.dimensionOrder.some((dimension, index) => dimension !== dimensionOrder[index]);
+        if (databaseOrderChanged) {
+          viewPathRestorerRef.current.schedule(dbPrefs.currentPath);
+        }
         if (dbDims.length > 0) {
           setDimensions(dbDims);
         } else {
@@ -178,7 +189,7 @@ function App() {
 
   // 当维度顺序变更时重置路径（维度结构变化，路径失效）
   useEffect(() => {
-    setCurrentPath([]);
+    setCurrentPath(viewPathRestorerRef.current.consumeDimensionOrderChange());
     setSelectedFileId(null);
   }, [dimensionOrder]);
 
@@ -258,6 +269,7 @@ function App() {
   const validPathString = validPathSegments.join('/');
   const currentPathString = currentPath.join('/');
   useEffect(() => {
+    if (!viewPathRestorerRef.current.shouldSanitizePath()) return;
     if (validPathString !== currentPathString) {
       setCurrentPath(validPathSegments);
     }
@@ -319,6 +331,48 @@ function App() {
     setCurrentPath([...currentPath, folderName]);
     setSelectedFileId(null);
   };
+
+  const handleApplyView = useCallback((view: SavedView) => {
+    const unavailableDimensions = view.dimensionOrder.filter((dimension) => !availableDimensions.includes(dimension));
+    if (unavailableDimensions.length > 0) {
+      showToast('预设路径已失效', `缺少维度：${unavailableDimensions.join('、')}。请在系统设置中更新该预设。`, 'error');
+      return;
+    }
+
+    const targetTree = buildTree(files, view.dimensionOrder);
+    let targetFolder = targetTree;
+    const validPath: string[] = [];
+    for (const segment of view.currentPath) {
+      const nextFolder = targetFolder.subFolders[segment];
+      if (!nextFolder) break;
+      targetFolder = nextFolder;
+      validPath.push(segment);
+    }
+
+    const restoredPathIsPartial = validPath.length !== view.currentPath.length;
+    setSearchQuery('');
+    setActiveFilters([]);
+    setQuickFilter('all');
+    setSelectedFileId(null);
+
+    const dimensionOrderChanged = view.dimensionOrder.length !== dimensionOrder.length || view.dimensionOrder.some((dimension, index) => dimension !== dimensionOrder[index]);
+    if (dimensionOrderChanged) {
+      viewPathRestorerRef.current.schedule(validPath);
+      setDimensionOrder([...view.dimensionOrder]);
+    } else {
+      setCurrentPath(validPath);
+    }
+
+    if (restoredPathIsPartial) {
+      showToast('预设路径已变化', `“${view.name}”已跳转到仍可访问的上级目录。请在系统设置中更新该预设。`, 'error');
+    }
+  }, [availableDimensions, dimensionOrder, files, showToast]);
+
+  const handleOrganizationViewsChange = useCallback(async (views: SavedView[]) => {
+    const savedViews = await apiService.saveOrganizationViews(views);
+    setOrganizationViews(savedViews);
+    return savedViews;
+  }, []);
 
   const handleUploadConfirm = async (finalFiles: FileItem[]) => {
     // Add to FileStore immediately (optimistic update)
@@ -452,6 +506,8 @@ function App() {
             availableDimensions={availableDimensions}
             onReset={handleResetSystem}
             onOpenManagement={() => setViewMode('management')}
+            organizationViews={organizationViews}
+            onApplyView={handleApplyView}
           />
           <ErrorBoundary>
             <Explorer 
@@ -492,6 +548,10 @@ function App() {
           setDimensions={setDimensions}
           onNotify={showToast}
           onTagsChanged={refreshKnownTags}
+          organizationViews={organizationViews}
+          currentPath={currentPath}
+          currentDimensionOrder={dimensionOrder}
+          onOrganizationViewsChange={handleOrganizationViewsChange}
           onClose={() => setViewMode('explorer')}
         />
       )}

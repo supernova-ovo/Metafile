@@ -1,8 +1,9 @@
 import React, { useState, useMemo } from 'react';
-import { ArrowLeft, Edit2, Merge, Trash2, ChevronDown, Plus, Tag, AlertTriangle, Loader2, X } from 'lucide-react';
-import type { FileItem } from '../lib/types';
+import { ArrowLeft, Edit2, Merge, Trash2, ChevronDown, Plus, Tag, AlertTriangle, Loader2, X, Bookmark } from 'lucide-react';
+import type { FileItem, SavedView } from '../lib/types';
 import type { DimRow, TagRow } from '../services/apiService';
 import { deleteDimensionWithRelations, deleteTagWithRelations, ensureDimension, ensureTag, mergeTagInto, queryTagsByDim, updateDimension, updateTag } from '../services/apiService';
+import { OrganizationViewSettings } from './OrganizationViewSettings';
 
 interface ManagementProps {
   files: FileItem[];
@@ -12,11 +13,16 @@ interface ManagementProps {
   setDimensions: React.Dispatch<React.SetStateAction<DimRow[]>>;
   onNotify?: (title: string, message: string, tone: 'success' | 'error') => void;
   onTagsChanged?: () => void | Promise<void>;
+  organizationViews: SavedView[];
+  currentPath: string[];
+  currentDimensionOrder: string[];
+  onOrganizationViewsChange: (views: SavedView[]) => Promise<SavedView[]>;
   onClose: () => void;
 }
 
-export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensions, setDimensions, onNotify, onTagsChanged, onClose }: ManagementProps) {
+export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensions, setDimensions, onNotify, onTagsChanged, organizationViews, currentPath, currentDimensionOrder, onOrganizationViewsChange, onClose }: ManagementProps) {
   const [selectedDimension, setSelectedDimension] = useState<string>(dimensions[0]?.WHMC || '');
+  const [settingsTab, setSettingsTab] = useState<'attributes' | 'organizationViews'>('attributes');
   const [isExpanded, setIsExpanded] = useState(true);
   const [tagRows, setTagRows] = useState<TagRow[]>([]);
   const [isTagLoading, setIsTagLoading] = useState(false);
@@ -413,13 +419,20 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
           返回文件浏览
         </button>
         <div className="h-6 w-px bg-gray-200 mx-6"></div>
-        <h1 className="text-xl font-bold text-gray-800">
-          ⚙️ 系统设置 <span className="text-gray-400">/</span>
-          <span className="text-indigo-600">属性管理</span>
-        </h1>
+        <h1 className="text-xl font-bold text-gray-800">⚙️ 系统设置</h1>
+        <div className="ml-8 flex items-center gap-1 rounded-lg bg-gray-100 p-1 text-sm">
+          <button onClick={() => setSettingsTab('attributes')} className={`rounded-md px-3 py-1.5 font-medium transition-colors ${settingsTab === 'attributes' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+            属性管理
+          </button>
+          <button onClick={() => setSettingsTab('organizationViews')} className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-colors ${settingsTab === 'organizationViews' ? 'bg-white text-indigo-700 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}>
+            <Bookmark className="h-3.5 w-3.5" />
+            预设视图
+          </button>
+        </div>
       </div>
 
       {/* Main Content: Two Panes */}
+      {settingsTab === 'attributes' ? (
       <div className="flex flex-1 overflow-hidden">
         
         {/* Left Pane: Dimensions */}
@@ -615,6 +628,17 @@ export function Management({ files, setFiles, onFilesChangeWithoutSync, dimensio
           </div>
         </div>
       </div>
+      ) : (
+        <OrganizationViewSettings
+          views={organizationViews}
+          files={files}
+          availableDimensions={dimensions.map((dimension) => dimension.WHMC)}
+          currentPath={currentPath}
+          currentDimensionOrder={currentDimensionOrder}
+          onChange={onOrganizationViewsChange}
+          onNotify={onNotify}
+        />
+      )}
 
       {tagToMerge && (
         <div
