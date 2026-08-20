@@ -1,6 +1,7 @@
 import { useJobStore } from '../store/useJobStore';
 import { useFileStore } from '../store/useFileStore';
 import { UPLOAD_URL, apiClient, generateUUID, encodeData, getCurrentUserId } from './core/apiClient';
+import { createMissingUploadUrlError, createUploadHttpError, getUploadErrorMessage } from './core/uploadErrors';
 import * as apiService from './apiService';
 import { fileService } from './fileService';
 
@@ -21,14 +22,14 @@ async function uploadFileBinary(file: File): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error(`上传HTTP错误: ${response.status} ${response.statusText}`);
+    throw createUploadHttpError(response, file);
   }
 
   const result = await response.json();
   const url = result.url || result.data?.url || result.path || result.data?.path || '';
   
   if (!url) {
-    throw new Error('上传响应中未找到文件URL');
+    throw createMissingUploadUrlError();
   }
 
   return url;
@@ -41,6 +42,7 @@ async function syncFileMetadata(job: ReturnType<typeof useJobStore.getState>['jo
     .map(([dim, values]) => `${dim}: ${values.join(', ')}`)
     .join('; ');
   const currentUserId = getCurrentUserId(undefined, 'uploader');
+  const now = new Date().toISOString();
 
   const record = {
     sys_id: file.id || generateUUID(),
@@ -52,7 +54,9 @@ async function syncFileMetadata(job: ReturnType<typeof useJobStore.getState>['jo
     Url: url,
     XuHao: '1',
     sys_user: currentUserId,
+    sys_date: now,
     sys_muser: currentUserId,
+    sys_mdate: now,
     sys_valid: 1,
     sys_batchid: generateUUID(),
     sys_epsid: generateUUID(),
@@ -102,6 +106,13 @@ export const jobQueue = {
       const currentJob = useJobStore.getState().jobs[jobId]; // get latest url
       
       await syncFileMetadata(currentJob, currentJob.url!);
+      update(jobId, { progress: 75 });
+
+      const fileRecordReady = await apiService.waitForFileRecord(currentJob.meta.id);
+      if (!fileRecordReady) {
+        throw new Error('文件元数据已提交，但后端暂未确认主表记录，请稍后重试属性同步');
+      }
+
       update(jobId, { progress: 80 });
 
       await syncFileTags(currentJob);
@@ -110,7 +121,17 @@ export const jobQueue = {
 
     } catch (error: any) {
       console.error(`[JobQueue] Job ${jobId} failed:`, error);
-      update(jobId, { status: 'failed', error: error.message || '未知错误' });
+      update(jobId, { status: 'failed', error: getUploadErrorMessage(error) });
+      const failedJob = useJobStore.getState().jobs[jobId] || job;
+      if (failedJob?.url) {
+        fileService.markPendingAttributeSync([jobId]);
+        fileService.notifySyncError({
+          title: '上传属性同步失败',
+          message: `${failedJob.meta.name} 已上传，但标签属性暂未保存到后端，请点击上传队列中的重试。`,
+          fileId: jobId,
+          error,
+        });
+      }
       
       // Remove from FileStore if it failed? 
       // Actually, it's better to keep it in the UI as a local file, but maybe mark it as failed visually later.

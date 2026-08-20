@@ -51,12 +51,13 @@ interface InspectorProps {
   allFiles: FileItem[];
   dimensionOrder: string[];
   availableDimensions: string[];
+  availableTagValues?: Record<string, string[]>;
   onUpdateAttributes: (id: string, newAttrs: Record<string, string[]>) => void;
   onDeleteFile: (id: string) => void | Promise<void>;
   onClose: () => void;
 }
 
-export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDimensions, onUpdateAttributes, onDeleteFile, onClose }: InspectorProps) {
+export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDimensions, availableTagValues = {}, onUpdateAttributes, onDeleteFile, onClose }: InspectorProps) {
   const [newTagInput, setNewTagInput] = useState<{ dim: string; val: string }>({ dim: '', val: '' });
   const [showAddDimMenu, setShowAddDimMenu] = useState(false);
   const [forceVisibleDims, setForceVisibleDims] = useState<Set<string>>(new Set());
@@ -132,11 +133,11 @@ export function Inspector({ selectedFile, allFiles, dimensionOrder, availableDim
   };
 
   const getExistingTags = (dim: string) => {
-    const tags = new Set<string>();
+    const tags = new Set<string>(availableTagValues[dim] || []);
     allFiles.forEach(file => {
       (file.attributes[dim] || []).forEach(val => tags.add(val));
     });
-    return Array.from(tags);
+    return Array.from(tags).sort((a, b) => a.localeCompare(b, 'zh-CN'));
   };
 
   const activeDimensions = availableDimensions.filter(dim => {

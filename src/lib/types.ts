@@ -21,3 +21,14 @@ export interface ActiveFilter {
   dimension: string;
   value: string;
 }
+
+/** A reusable explorer destination saved by a user or by system settings. */
+export interface SavedView {
+  id: string;
+  name: string;
+  dimensionOrder: string[];
+  currentPath: string[];
+  sortOrder: number;
+  enabled: boolean;
+  updatedAt: string;
+}

@@ -128,7 +128,7 @@ export function JobQueueOverlay() {
                 
                 {/* Error message */}
                 {job.status === 'failed' && (
-                  <div className="text-xs text-red-500 bg-red-50 p-1.5 rounded truncate">
+                  <div className="text-xs text-red-600 bg-red-50 p-2 rounded leading-relaxed break-words">
                     {job.error || '上传失败'}
                   </div>
                 )}

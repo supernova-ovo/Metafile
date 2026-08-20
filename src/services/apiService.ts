@@ -11,6 +11,9 @@
  */
 
 import { generateUUID, encodeData, apiClient, getCurrentUserId } from './core/apiClient';
+import { queryAllPages } from './core/pagination';
+import type { SavedView } from '../lib/types';
+import { parseSavedViews, reorderSavedViews } from '../lib/savedViews';
 
 const SECTION_IDS = {
   FILES: '76c22773-66cb-a51c-359b-5a2872169266',
@@ -19,6 +22,11 @@ const SECTION_IDS = {
   FILE_TAGS: '1971f501-6a69-bff0-c4f2-945c18db79c1',
   PREFERENCES: '383be00c-b492-3ce0-373a-43b6a3bedaad',
 } as const;
+
+// A reserved preference record stores the organization-wide shortcuts. Keeping
+// it separate from user preference rows avoids a schema migration while still
+// making the configuration shared across browsers and devices.
+const ORGANIZATION_PRESETS_USER_ID = 'metafile-organization-presets';
 
 export { generateUUID };
 
@@ -79,10 +87,109 @@ export interface PrefRow {
 }
 
 const dimNameToIdCache = new Map<string, string>();
+const RETRIABLE_API_DELAYS_MS = [300, 900, 1800];
+const FILE_RECORD_READY_DELAYS_MS = [200, 500, 1000, 2000, 3500];
+const DICTIONARY_RECORD_READY_DELAYS_MS = [200, 500, 1000, 2000];
 // tagKeyToIdCache 已移至 syncAttributes 函数内部（局部变量），避免跨调用 stale 缓存问题
 
 function buildTagKey(dimId: string, tagValue: string): string {
   return `${dimId}::${tagValue}`;
+}
+
+export type PreferenceUpdate = {
+  dimensionOrder?: string[];
+  currentPath?: string[];
+  selectedFileId?: string | null;
+};
+
+function normalizeId(value: unknown): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function idsEqual(left: unknown, right: unknown): boolean {
+  return normalizeId(left) === normalizeId(right);
+}
+
+function filterRowsByIdField<T extends Record<string, any>>(
+  rows: T[],
+  field: string,
+  expectedValue: string,
+  operation: string
+): T[] {
+  const filtered = rows.filter((row) => idsEqual(row[field], expectedValue));
+  if (filtered.length !== rows.length) {
+    console.warn(
+      `[API_GUARD] ${operation} 查询返回了 ${rows.length} 行，但只有 ${filtered.length} 行匹配 ${field}=${expectedValue}，已忽略不匹配数据。`
+    );
+  }
+  return filtered;
+}
+
+function cacheDimension(row: DimRow) {
+  if (row.WHMC && row.sys_id) {
+    dimNameToIdCache.set(row.WHMC.trim(), row.sys_id);
+  }
+}
+
+async function refreshDimensionCache(): Promise<void> {
+  const dims = await queryAllDimensions();
+  dimNameToIdCache.clear();
+  for (const d of dims) {
+    cacheDimension(d);
+  }
+}
+
+function removeCachedDimensionById(dimId: string) {
+  for (const [name, cachedDimId] of dimNameToIdCache.entries()) {
+    if (cachedDimId === dimId) {
+      dimNameToIdCache.delete(name);
+    }
+  }
+}
+
+function isRetriableApiError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('502') ||
+    normalized.includes('503') ||
+    normalized.includes('504') ||
+    normalized.includes('bad gateway') ||
+    normalized.includes('gateway timeout') ||
+    normalized.includes('failed to fetch') ||
+    normalized.includes('networkerror') ||
+    normalized.includes('foreign key') ||
+    normalized.includes('reference constraint') ||
+    normalized.includes('conflicted with the reference') ||
+    normalized.includes('insert conflicted') ||
+    normalized.includes('wjid') ||
+    normalized.includes('bqid') ||
+    normalized.includes('whid') ||
+    message.includes('外键') ||
+    message.includes('引用') ||
+    message.includes('关联') ||
+    message.includes('约束')
+  );
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function retryApiCall<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt <= RETRIABLE_API_DELAYS_MS.length; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (attempt >= RETRIABLE_API_DELAYS_MS.length || !isRetriableApiError(error)) {
+        throw error;
+      }
+      console.warn(`[API_RETRY] ${operation} failed, retrying (${attempt + 1}/${RETRIABLE_API_DELAYS_MS.length})`, error);
+      await wait(RETRIABLE_API_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw new Error(`${operation} failed`);
 }
 
 // ============================================================
@@ -97,6 +204,49 @@ export async function queryFiles(page = 1, pageSize = 200): Promise<{ ROWS: File
     _pagesize: String(pageSize),
   });
   return { ROWS: result.ROWS || [], TOTAL: result.TOTAL || 0 };
+}
+
+/**
+ * Loads the complete file table for the explorer's in-memory store.
+ * A first-page-only request loses valid records once the table grows beyond
+ * the requested page size.
+ */
+export async function queryAllFiles(pageSize = 500): Promise<{ ROWS: FileRow[]; TOTAL: number }> {
+  return queryAllPages<FileRow>((page, size) => queryFiles(page, size), pageSize);
+}
+
+async function queryFileById(sys_id: string): Promise<FileRow | null> {
+  const result = await retryApiCall('queryFileById', () => apiClient({
+    id: SECTION_IDS.FILES,
+    mode: 'query',
+    where: JSON.stringify({ sys_id }),
+    _pageindex: '1',
+    _pagesize: '1',
+  }));
+  const rows = filterRowsByIdField<FileRow>(result.ROWS || [], 'sys_id', sys_id, 'queryFileById');
+  if (rows.length > 0) return rows[0];
+
+  const allRows = await queryAllRows(SECTION_IDS.FILES, 5000);
+  const fallbackRow = allRows.find((row: FileRow) => idsEqual(row.sys_id, sys_id));
+  if (fallbackRow) {
+    console.warn(`[API_GUARD] queryFileById 使用全量分页回查命中 sys_id=${sys_id}，后端按 sys_id 查询可能未生效。`);
+    return fallbackRow;
+  }
+
+  return null;
+}
+
+export async function waitForFileRecord(sys_id: string): Promise<boolean> {
+  for (let attempt = 0; attempt <= FILE_RECORD_READY_DELAYS_MS.length; attempt += 1) {
+    const row = await queryFileById(sys_id);
+    if (row) return true;
+
+    const delay = FILE_RECORD_READY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await wait(delay);
+  }
+
+  return false;
 }
 
 export async function insertFileRecord(record: FileRow): Promise<boolean> {
@@ -127,12 +277,27 @@ export async function updateFileRecord(sys_id: string, fields: Partial<FileRow>)
 }
 
 export async function deleteFileRecord(sys_id: string): Promise<boolean> {
-  const result = await apiClient({
-    id: SECTION_IDS.FILES,
-    mode: 'update',
-    _p_data: encodeData({ deleted: [{ sys_id }] }),
-  });
-  return result.STATUS === 'Success' || result.STATUS === 'OK';
+  for (let attempt = 0; attempt <= RETRIABLE_API_DELAYS_MS.length; attempt += 1) {
+    try {
+      const result = await apiClient({
+        id: SECTION_IDS.FILES,
+        mode: 'update',
+        _p_data: encodeData({ deleted: [{ sys_id }] }),
+      });
+      if (result.STATUS === 'Success' || result.STATUS === 'OK') return true;
+      if (!(await queryFileById(sys_id))) return true;
+      return false;
+    } catch (error) {
+      if (!(await queryFileById(sys_id))) return true;
+      if (attempt >= RETRIABLE_API_DELAYS_MS.length || !isRetriableApiError(error)) {
+        throw error;
+      }
+      console.warn(`[API_RETRY] deleteFileRecord failed, retrying (${attempt + 1}/${RETRIABLE_API_DELAYS_MS.length})`, error);
+      await wait(RETRIABLE_API_DELAYS_MS[attempt]);
+    }
+  }
+
+  return false;
 }
 
 // ============================================================
@@ -149,6 +314,31 @@ export async function queryAllDimensions(): Promise<DimRow[]> {
   return result.ROWS || [];
 }
 
+async function queryDimensionById(sys_id: string): Promise<DimRow | null> {
+  const result = await retryApiCall('queryDimensionById', () => apiClient({
+    id: SECTION_IDS.DIMS,
+    mode: 'query',
+    where: JSON.stringify({ sys_id }),
+    _pageindex: '1',
+    _pagesize: '1',
+  }));
+  const rows = filterRowsByIdField<DimRow>(result.ROWS || [], 'sys_id', sys_id, 'queryDimensionById');
+  return rows.length > 0 ? rows[0] : null;
+}
+
+async function waitForDimensionRecord(sys_id: string): Promise<boolean> {
+  for (let attempt = 0; attempt <= DICTIONARY_RECORD_READY_DELAYS_MS.length; attempt += 1) {
+    const row = await queryDimensionById(sys_id);
+    if (row) return true;
+
+    const delay = DICTIONARY_RECORD_READY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await wait(delay);
+  }
+
+  return false;
+}
+
 export async function ensureDimension(whmc: string): Promise<string> {
   // 先查询是否存在
   const result = await apiClient({
@@ -159,9 +349,12 @@ export async function ensureDimension(whmc: string): Promise<string> {
     _pagesize: '1',
   });
 
-  const rows = result.ROWS || [];
-  if (rows.length > 0) {
-    return rows[0].sys_id;
+  const rows = ((result.ROWS || []) as DimRow[])
+    .filter((row) => (row.WHMC || '').trim() === whmc.trim());
+  const existingDim = rows.find((row) => row.sys_id);
+  if (existingDim?.sys_id) {
+    cacheDimension(existingDim);
+    return existingDim.sys_id;
   }
 
   // 不存在则创建（补全所有 NOT NULL 字段）
@@ -190,6 +383,11 @@ export async function ensureDimension(whmc: string): Promise<string> {
   });
 
   if (insertResult.STATUS === 'Success' || insertResult.STATUS === 'OK') {
+    dimNameToIdCache.set(whmc.trim(), sys_id);
+    const ready = await waitForDimensionRecord(sys_id);
+    if (!ready) {
+      throw new Error(`维度已提交但暂未可查询，请稍后重试: ${whmc}`);
+    }
     return sys_id;
   }
   throw new Error(`创建维度失败: ${whmc} (${JSON.stringify(insertResult)})`);
@@ -201,7 +399,12 @@ export async function updateDimension(sys_id: string, whmc: string): Promise<boo
     mode: 'update',
     _p_data: encodeData({ updated: [{ sys_id, WHMC: whmc, WHMS: whmc }] }),
   });
-  return result.STATUS === 'Success' || result.STATUS === 'OK';
+  const success = result.STATUS === 'Success' || result.STATUS === 'OK';
+  if (success) {
+    removeCachedDimensionById(sys_id);
+    dimNameToIdCache.set(whmc.trim(), sys_id);
+  }
+  return success;
 }
 
 export async function deleteDimensionWithRelations(dimId: string): Promise<boolean> {
@@ -216,13 +419,22 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
       _pageindex: '1',
       _pagesize: '10000',
     });
-    const fileTags = fileTagsResult.ROWS || [];
+    const fileTags = filterRowsByIdField<FileTagRow>(
+      fileTagsResult.ROWS || [],
+      'WHID',
+      dimId,
+      'deleteDimensionWithRelations'
+    );
     
     if (fileTags.length > 0) {
       const removeFileTagsResult = await apiClient({
         id: SECTION_IDS.FILE_TAGS,
         mode: 'update',
-        _p_data: encodeData({ deleted: fileTags.map((r: any) => ({ sys_id: r.sys_id })) }),
+        _p_data: encodeData({
+          deleted: fileTags
+            .filter(r => r.sys_id && idsEqual(r.WHID, dimId))
+            .map(r => ({ sys_id: r.sys_id })),
+        }),
       });
       if (!(removeFileTagsResult.STATUS === 'Success' || removeFileTagsResult.STATUS === 'OK')) {
         return false;
@@ -232,7 +444,11 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
     const removeTagsResult = await apiClient({
       id: SECTION_IDS.TAGS,
       mode: 'update',
-      _p_data: encodeData({ deleted: tags.map(t => ({ sys_id: t.sys_id })) }),
+      _p_data: encodeData({
+        deleted: tags
+          .filter(t => t.sys_id && idsEqual(t.WHID, dimId))
+          .map(t => ({ sys_id: t.sys_id })),
+      }),
     });
     if (!(removeTagsResult.STATUS === 'Success' || removeTagsResult.STATUS === 'OK')) {
       return false;
@@ -246,7 +462,11 @@ export async function deleteDimensionWithRelations(dimId: string): Promise<boole
     _p_data: encodeData({ deleted: [{ sys_id: dimId }] }),
   });
 
-  return removeDimResult.STATUS === 'Success' || removeDimResult.STATUS === 'OK';
+  const success = removeDimResult.STATUS === 'Success' || removeDimResult.STATUS === 'OK';
+  if (success) {
+    removeCachedDimensionById(dimId);
+  }
+  return success;
 }
 
 // ============================================================
@@ -261,10 +481,15 @@ export async function queryTagsByDim(dimId: string): Promise<TagRow[]> {
     _pageindex: '1',
     _pagesize: '200',
   });
-  return result.ROWS || [];
+  return filterRowsByIdField<TagRow>(result.ROWS || [], 'WHID', dimId, 'queryTagsByDim');
 }
 
 export async function ensureTag(whid: string, bqz: string): Promise<string> {
+  const dimensionReady = await waitForDimensionRecord(whid);
+  if (!dimensionReady) {
+    throw new Error(`标签所属维度暂未可查询，请稍后重试: ${bqz}`);
+  }
+
   // 先查询同维度下是否存在同名标签
   const result = await apiClient({
     id: SECTION_IDS.TAGS,
@@ -274,9 +499,11 @@ export async function ensureTag(whid: string, bqz: string): Promise<string> {
     _pagesize: '1',
   });
 
-  const rows = result.ROWS || [];
-  if (rows.length > 0) {
-    return rows[0].sys_id;
+  const rows = ((result.ROWS || []) as TagRow[])
+    .filter((row) => idsEqual(row.WHID, whid) && (row.BQZ || '').trim() === bqz.trim());
+  const existingTag = rows.find((row) => row.sys_id);
+  if (existingTag?.sys_id) {
+    return existingTag.sys_id;
   }
 
   // 不存在则创建（补全所有 NOT NULL 字段）
@@ -305,6 +532,10 @@ export async function ensureTag(whid: string, bqz: string): Promise<string> {
   });
 
   if (insertResult.STATUS === 'Success' || insertResult.STATUS === 'OK') {
+    const tagReady = await waitForTagRecord(sys_id);
+    if (!tagReady) {
+      throw new Error(`标签已提交但暂未可查询，请稍后重试: ${bqz}`);
+    }
     return sys_id;
   }
   throw new Error(`创建标签失败: ${bqz} (${JSON.stringify(insertResult)})`);
@@ -319,6 +550,31 @@ export async function updateTag(sys_id: string, bqz: string): Promise<boolean> {
   return result.STATUS === 'Success' || result.STATUS === 'OK';
 }
 
+async function queryTagById(tagId: string): Promise<TagRow | null> {
+  const result = await retryApiCall('queryTagById', () => apiClient({
+    id: SECTION_IDS.TAGS,
+    mode: 'query',
+    where: JSON.stringify({ sys_id: tagId }),
+    _pageindex: '1',
+    _pagesize: '1',
+  }));
+  const rows = filterRowsByIdField<TagRow>(result.ROWS || [], 'sys_id', tagId, 'queryTagById');
+  return rows.length > 0 ? rows[0] : null;
+}
+
+async function waitForTagRecord(sys_id: string): Promise<boolean> {
+  for (let attempt = 0; attempt <= DICTIONARY_RECORD_READY_DELAYS_MS.length; attempt += 1) {
+    const row = await queryTagById(sys_id);
+    if (row) return true;
+
+    const delay = DICTIONARY_RECORD_READY_DELAYS_MS[attempt];
+    if (delay === undefined) break;
+    await wait(delay);
+  }
+
+  return false;
+}
+
 export async function deleteTagWithRelations(tagId: string): Promise<boolean> {
   const fileTagsResult = await apiClient({
     id: SECTION_IDS.FILE_TAGS,
@@ -327,13 +583,22 @@ export async function deleteTagWithRelations(tagId: string): Promise<boolean> {
     _pageindex: '1',
     _pagesize: '10000',
   });
-  const fileTags = fileTagsResult.ROWS || [];
+  const fileTags = filterRowsByIdField<FileTagRow>(
+    fileTagsResult.ROWS || [],
+    'BQID',
+    tagId,
+    'deleteTagWithRelations'
+  );
 
   if (fileTags.length > 0) {
     const removeFileTagsResult = await apiClient({
       id: SECTION_IDS.FILE_TAGS,
       mode: 'update',
-      _p_data: encodeData({ deleted: fileTags.map((r: any) => ({ sys_id: r.sys_id })) }),
+      _p_data: encodeData({
+        deleted: fileTags
+          .filter(r => r.sys_id && idsEqual(r.BQID, tagId))
+          .map(r => ({ sys_id: r.sys_id })),
+      }),
     });
     if (!(removeFileTagsResult.STATUS === 'Success' || removeFileTagsResult.STATUS === 'OK')) {
       return false;
@@ -351,6 +616,105 @@ export async function deleteTagWithRelations(tagId: string): Promise<boolean> {
 /**
  * 查询所有标签（含维度名称信息）
  */
+export async function mergeTagInto(sourceTagId: string, targetTagId: string): Promise<boolean> {
+  if (sourceTagId === targetTagId) return true;
+
+  const targetTag = await queryTagById(targetTagId);
+  if (!targetTag?.sys_id || !targetTag.WHID) {
+    throw new Error('目标标签不存在，无法合并');
+  }
+
+  const sourceTag = await queryTagById(sourceTagId);
+  if (!sourceTag?.sys_id) return true;
+
+  const [sourceResult, targetResult] = await Promise.all([
+    retryApiCall('querySourceTagRelations', () => apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'query',
+      where: JSON.stringify({ BQID: sourceTagId }),
+      _pageindex: '1',
+      _pagesize: '10000',
+    })),
+    retryApiCall('queryTargetTagRelations', () => apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'query',
+      where: JSON.stringify({ BQID: targetTagId }),
+      _pageindex: '1',
+      _pagesize: '10000',
+    })),
+  ]);
+
+  const sourceAssocs = filterRowsByIdField<FileTagRow>(
+    sourceResult.ROWS || [],
+    'BQID',
+    sourceTagId,
+    'mergeTagInto:source'
+  );
+  const targetAssocs = filterRowsByIdField<FileTagRow>(
+    targetResult.ROWS || [],
+    'BQID',
+    targetTagId,
+    'mergeTagInto:target'
+  );
+  const targetFileIds = new Set(targetAssocs.map((row) => row.WJID));
+  const duplicateSourceAssocs = sourceAssocs
+    .filter((row) => row.sys_id && idsEqual(row.BQID, sourceTagId) && targetFileIds.has(row.WJID))
+    .map((row) => ({ sys_id: row.sys_id }));
+  const assocsToMove = sourceAssocs
+    .filter((row) => row.sys_id && idsEqual(row.BQID, sourceTagId) && !targetFileIds.has(row.WJID))
+    .map((row) => ({ sys_id: row.sys_id, BQID: targetTagId, WHID: targetTag.WHID }));
+
+  if (duplicateSourceAssocs.length > 0) {
+    const removeDuplicatesResult = await retryApiCall('mergeTagRemoveDuplicateRelations', () => apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'update',
+      _p_data: encodeData({ deleted: duplicateSourceAssocs }),
+    }));
+    if (!(removeDuplicatesResult.STATUS === 'Success' || removeDuplicatesResult.STATUS === 'OK')) {
+      return false;
+    }
+  }
+
+  if (assocsToMove.length > 0) {
+    const moveResult = await retryApiCall('mergeTagMoveRelations', () => apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'update',
+      _p_data: encodeData({ updated: assocsToMove }),
+    }));
+    if (!(moveResult.STATUS === 'Success' || moveResult.STATUS === 'OK')) {
+      return false;
+    }
+  }
+
+  const remainingSourceResult = await retryApiCall('queryRemainingSourceTagRelations', () => apiClient({
+    id: SECTION_IDS.FILE_TAGS,
+    mode: 'query',
+    where: JSON.stringify({ BQID: sourceTagId }),
+    _pageindex: '1',
+    _pagesize: '1',
+  }));
+  const remainingSourceAssocs = filterRowsByIdField<FileTagRow>(
+    remainingSourceResult.ROWS || [],
+    'BQID',
+    sourceTagId,
+    'mergeTagInto:remainingSource'
+  );
+  if (remainingSourceAssocs.length > 0) {
+    return false;
+  }
+
+  const removeSourceResult = await retryApiCall('mergeTagRemoveSourceTag', () => apiClient({
+    id: SECTION_IDS.TAGS,
+    mode: 'update',
+    _p_data: encodeData({ deleted: [{ sys_id: sourceTagId }] }),
+  }));
+  if (removeSourceResult.STATUS === 'Success' || removeSourceResult.STATUS === 'OK') {
+    return true;
+  }
+
+  return !(await queryTagById(sourceTagId));
+}
+
 export async function queryAllTags(): Promise<(TagRow & { WHMC?: string })[]> {
   const dims = await queryAllDimensions();
   const dimMap = new Map(dims.map(d => [d.sys_id!, d.WHMC]));
@@ -381,36 +745,31 @@ export async function queryFileTags(fileId: string): Promise<FileTagRow[]> {
     _pageindex: '1',
     _pagesize: '200',
   });
-  return result.ROWS || [];
+  return filterRowsByIdField<FileTagRow>(result.ROWS || [], 'WJID', fileId, 'queryFileTags');
 }
 
 export async function removeAllFileTags(fileId: string): Promise<boolean> {
-  const rows = await queryFileTags(fileId);
-  if (rows.length === 0) return true;
+  return retryApiCall('removeAllFileTags', async () => {
+    const rows = await queryFileTags(fileId);
+    const deleted = rows
+      .filter((row) => row.sys_id && idsEqual(row.WJID, fileId))
+      .map((row) => ({ sys_id: row.sys_id }));
 
-  const removeResult = await apiClient({
-    id: SECTION_IDS.FILE_TAGS,
-    mode: 'update',
-    _p_data: encodeData({
-      deleted: rows.map((row) => ({ sys_id: row.sys_id })),
-    }),
+    if (deleted.length === 0) return true;
+
+    const removeResult = await apiClient({
+      id: SECTION_IDS.FILE_TAGS,
+      mode: 'update',
+      _p_data: encodeData({ deleted }),
+    });
+
+    return removeResult.STATUS === 'Success' || removeResult.STATUS === 'OK';
   });
-
-  return removeResult.STATUS === 'Success' || removeResult.STATUS === 'OK';
 }
 
 export async function deleteFileWithRelations(fileId: string): Promise<boolean> {
-  // 步骤0：若用户偏好表中 XZWJID 引用了该文件，先清空
-  // 否则外键约束 FK_D_WJGL_YHPH_XZWJID 会阻止后续的 DELETE 操作
-  try {
-    const pref = await getPreference();
-    if (pref && pref.XZWJID === fileId) {
-      await upsertPreference({ selectedFileId: null });
-    }
-  } catch (e) {
-    // 偏好清空失败时不阻断删除流程（非关键路径），仅记录警告
-    console.warn('[deleteFileWithRelations] 清空 XZWJID 偏好失败，继续尝试删除文件:', e);
-  }
+  const preferencesCleared = await clearFileReferencesFromPreferences(fileId);
+  if (!preferencesCleared) return false;
 
   // 步骤1：删除文件-标签关联（D_WJGL_WJBQ）
   const relationsRemoved = await removeAllFileTags(fileId);
@@ -430,25 +789,53 @@ function getPreferenceUserId(): string {
   return getCurrentUserId(undefined, DEFAULT_USER_ID);
 }
 
-export async function getPreference(): Promise<PrefRow | null> {
-  const userId = getPreferenceUserId();
+function parseStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((value): value is string => typeof value === 'string')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+export function readPreferencePath(pref: PrefRow | null | undefined): string[] {
+  if (!pref?.DQDL) return [];
+  try {
+    const parsed = JSON.parse(pref.DQDL);
+    // Older records stored the path directly as an array.
+    if (Array.isArray(parsed)) return parseStringArray(parsed);
+    return parsed && typeof parsed === 'object' ? parseStringArray(parsed.currentPath) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function queryPreferenceByUserId(userId: string): Promise<PrefRow | null> {
   const result = await apiClient({
     id: SECTION_IDS.PREFERENCES,
     mode: 'query',
     where: JSON.stringify({ YHID: userId }),
     _pageindex: '1',
-    _pagesize: '1',
+    _pagesize: '100',
   });
 
-  const rows = result.ROWS || [];
-  return rows.length > 0 ? rows[0] : null;
+  const matchedRows = filterRowsByIdField<PrefRow>(result.ROWS || [], 'YHID', userId, 'queryPreferenceByUserId');
+  if (matchedRows.length > 0) return matchedRows[0];
+
+  // Some deployments ignore field predicates. Fall back to a complete local
+  // lookup so a shared-preference row cannot be confused with another user.
+  const allRows = await queryAllRows(SECTION_IDS.PREFERENCES, 5000);
+  const fallbackRow = allRows.find((row: PrefRow) => idsEqual(row.YHID, userId));
+  if (fallbackRow) {
+    console.warn(`[API_GUARD] queryPreferenceByUserId 使用全量分页回查命中 YHID=${userId}，后端按 YHID 查询可能未生效。`);
+  }
+  return fallbackRow || null;
 }
 
-export async function upsertPreference(prefs: {
-  dimensionOrder?: string[];
-  currentPath?: string[];
-  selectedFileId?: string | null;
-}): Promise<boolean> {
+export async function getPreference(): Promise<PrefRow | null> {
+  return queryPreferenceByUserId(getPreferenceUserId());
+}
+
+export async function upsertPreference(prefs: PreferenceUpdate): Promise<boolean> {
   const existing = await getPreference();
   const userId = getPreferenceUserId();
 
@@ -486,6 +873,39 @@ export async function upsertPreference(prefs: {
 }
 
 // ============================================================
+// D_WJGL_YHPH 引用清理
+// ============================================================
+
+async function queryPreferencesBySelectedFile(fileId: string): Promise<PrefRow[]> {
+  const result = await retryApiCall('queryPreferencesBySelectedFile', () => apiClient({
+    id: SECTION_IDS.PREFERENCES,
+    mode: 'query',
+    where: JSON.stringify({ XZWJID: fileId }),
+    _pageindex: '1',
+    _pagesize: '10000',
+  }));
+  return filterRowsByIdField<PrefRow>(result.ROWS || [], 'XZWJID', fileId, 'queryPreferencesBySelectedFile');
+}
+
+async function clearFileReferencesFromPreferences(fileId: string): Promise<boolean> {
+  return retryApiCall('clearFileReferencesFromPreferences', async () => {
+    const rows = await queryPreferencesBySelectedFile(fileId);
+    const updates = rows
+      .filter((row) => row.sys_id)
+      .map((row) => ({ sys_id: row.sys_id, XZWJID: null }));
+
+    if (updates.length === 0) return true;
+
+    const result = await apiClient({
+      id: SECTION_IDS.PREFERENCES,
+      mode: 'update',
+      _p_data: encodeData({ updated: updates }),
+    });
+    return result.STATUS === 'Success' || result.STATUS === 'OK';
+  });
+}
+
+// ============================================================
 // 核心：attributes 同步逻辑
 // ============================================================
 
@@ -494,40 +914,68 @@ export async function upsertPreference(prefs: {
  * D_WJGL_WH / D_WJGL_BQ / D_WJGL_WJBQ
  */
 const syncLocks = new Map<string, Promise<void>>();
-const SYNC_RETRY_DELAYS_MS = [300, 900, 1800];
-
-function isRetriableSyncError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    message.includes('502') ||
-    message.includes('503') ||
-    message.includes('504') ||
-    message.includes('Bad Gateway') ||
-    message.includes('Gateway Timeout') ||
-    message.includes('Failed to fetch') ||
-    message.includes('NetworkError')
-  );
-}
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
 
 async function syncAttributesWithRetry(
   fileId: string,
   attributes: Record<string, string[]>
 ): Promise<void> {
-  for (let attempt = 0; attempt <= SYNC_RETRY_DELAYS_MS.length; attempt += 1) {
+  for (let attempt = 0; attempt <= RETRIABLE_API_DELAYS_MS.length; attempt += 1) {
     try {
       await _syncAttributesInner(fileId, attributes);
       return;
     } catch (error) {
-      if (attempt >= SYNC_RETRY_DELAYS_MS.length || !isRetriableSyncError(error)) {
+      if (attempt >= RETRIABLE_API_DELAYS_MS.length || !isRetriableApiError(error)) {
         throw error;
       }
-      await wait(SYNC_RETRY_DELAYS_MS[attempt]);
+      await wait(RETRIABLE_API_DELAYS_MS[attempt]);
     }
   }
+}
+
+/** Organization presets are managed only from the system-settings view. */
+export async function queryOrganizationViews(): Promise<SavedView[]> {
+  const row = await queryPreferenceByUserId(ORGANIZATION_PRESETS_USER_ID);
+  return parseSavedViews(row?.DQDL);
+}
+
+export async function saveOrganizationViews(views: SavedView[]): Promise<SavedView[]> {
+  const normalizedViews = reorderSavedViews(views);
+  const existing = await queryPreferenceByUserId(ORGANIZATION_PRESETS_USER_ID);
+  const payload = JSON.stringify(normalizedViews);
+
+  if (existing?.sys_id) {
+    await apiClient({
+      id: SECTION_IDS.PREFERENCES,
+      mode: 'update',
+      _p_data: encodeData({
+        updated: [{
+          sys_id: existing.sys_id,
+          DQDL: payload,
+        }],
+      }),
+    });
+    return normalizedViews;
+  }
+
+  await apiClient({
+    id: SECTION_IDS.PREFERENCES,
+    mode: 'update',
+    _p_data: encodeData({
+      updated: [{
+        sys_id: generateUUID(),
+        YHID: ORGANIZATION_PRESETS_USER_ID,
+        WHPX: JSON.stringify([]),
+        DQDL: payload,
+        XZWJID: null,
+        sys_user: getPreferenceUserId(),
+        sys_muser: getPreferenceUserId(),
+        sys_valid: 1,
+        sys_batchid: generateUUID(),
+        sys_epsid: generateUUID(),
+      }],
+    }),
+  });
+  return normalizedViews;
 }
 
 export async function syncAttributes(
@@ -582,20 +1030,17 @@ async function _syncAttributesInner(
         id: SECTION_IDS.FILE_TAGS,
         mode: 'update',
         _p_data: encodeData({
-          deleted: existingAssocs.map((row) => ({ sys_id: row.sys_id })),
+          deleted: existingAssocs
+            .filter((row) => row.sys_id && idsEqual(row.WJID, fileId))
+            .map((row) => ({ sys_id: row.sys_id })),
         }),
       });
     }
     return;
   }
 
-  // 3) 预热维度缓存（最多 1 次 query）
-  if (dimNameToIdCache.size === 0) {
-    const dims = await queryAllDimensions();
-    for (const d of dims) {
-      if (d.WHMC && d.sys_id) dimNameToIdCache.set(d.WHMC.trim(), d.sys_id);
-    }
-  }
+  // 3) 刷新维度缓存，避免删除/重建同名维度后继续使用旧 WHID。
+  await refreshDimensionCache();
 
   // 4) 缺失维度批量创建（1 次 update），并回填缓存
   const now = new Date().toISOString();
@@ -724,7 +1169,7 @@ async function _syncAttributesInner(
 
   // 9) 批量删除多余关联（1 次 remove）
   const toDeleteAssocs = existingAssocs
-    .filter((assoc) => !targetTagIdSet.has(assoc.BQID))
+    .filter((assoc) => assoc.sys_id && idsEqual(assoc.WJID, fileId) && !targetTagIdSet.has(assoc.BQID))
     .map((assoc) => ({ sys_id: assoc.sys_id }));
   if (toDeleteAssocs.length > 0) {
     const removeAssocResult = await apiClient({
@@ -797,16 +1242,23 @@ export async function loadFileAttributes(fileId: string): Promise<Record<string,
   return result;
 }
 
-export async function loadAllFileAttributes(): Promise<Record<string, Record<string, string[]>>> {
-  const [assocsR, dimsR, tagsR] = await Promise.all([
-    apiClient({ id: SECTION_IDS.FILE_TAGS, mode: 'query', _pageindex: '1', _pagesize: '10000' }),
-    apiClient({ id: SECTION_IDS.DIMS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
-    apiClient({ id: SECTION_IDS.TAGS, mode: 'query', _pageindex: '1', _pagesize: '5000' }),
-  ]);
+async function queryAllRows(id: string, pageSize: number): Promise<any[]> {
+  const result = await queryAllPages<any>((pageIndex, size) => apiClient({
+      id,
+      mode: 'query',
+      _pageindex: String(pageIndex),
+      _pagesize: String(size),
+    }), pageSize);
 
-  const assocs = assocsR.ROWS || [];
-  const dims = dimsR.ROWS || [];
-  const tags = tagsR.ROWS || [];
+  return result.ROWS;
+}
+
+export async function loadAllFileAttributes(): Promise<Record<string, Record<string, string[]>>> {
+  const [assocs, dims, tags] = await Promise.all([
+    queryAllRows(SECTION_IDS.FILE_TAGS, 10000),
+    queryAllRows(SECTION_IDS.DIMS, 5000),
+    queryAllRows(SECTION_IDS.TAGS, 5000),
+  ]);
 
   const dimNameById = new Map<string, string>();
   for (const d of dims) {
@@ -888,10 +1340,10 @@ export async function auditFileTagRelations(): Promise<{
 // 暴露给控制台供测试使用
 if (typeof window !== 'undefined') {
   (window as any).apiService = {
-    queryFiles, insertFileRecord, insertFileRecords, updateFileRecord, deleteFileRecord,
-    queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, updateTag, deleteTagWithRelations, queryAllTags,
+    queryFiles, queryAllFiles, insertFileRecord, insertFileRecords, updateFileRecord, deleteFileRecord,
+    queryAllDimensions, ensureDimension, queryTagsByDim, ensureTag, updateTag, deleteTagWithRelations, mergeTagInto, queryAllTags,
     queryFileTags, removeAllFileTags, deleteFileWithRelations,
-    getPreference, upsertPreference, syncAttributes, loadFileAttributes, loadAllFileAttributes,
+    getPreference, upsertPreference, queryOrganizationViews, saveOrganizationViews, waitForFileRecord, syncAttributes, loadFileAttributes, loadAllFileAttributes,
     auditFileTagRelations
   };
 }
